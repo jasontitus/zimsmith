@@ -13,3 +13,9 @@ ffmpeg -f lavfi -i "aevalsrc='if(lt(mod(t,1),0.1),sin(2*PI*880*t),0)':s=48000:d=
 ```
 
 Rust tests combine both video variants with the audio and compare every encoded sample, DTS/PTS, duration, sync flag, codec configuration, and edit list (with movie-timescale conversion). Where the host supports the codec, a WebKit test opens the actual exported player HTML and checks its single audio/video timeline through playback, pause, seeking, and rate changes.
+
+`alternate-audio.m4a` is a synthetic four-second 440 Hz tone used to verify that repairing a cached combined video replaces its embedded audio with the separately selected track. It contains no third-party media:
+
+```sh
+ffmpeg -f lavfi -i 'sine=frequency=440:sample_rate=48000:duration=4' -c:a aac -b:a 32k -map_metadata -1 alternate-audio.m4a
+```

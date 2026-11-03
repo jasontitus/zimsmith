@@ -24,6 +24,8 @@ Findings and resolutions:
 - The matching MIT-licensed ZIM library snapshot is retained with three Unix-only hint guards for Windows. Only library source and build/header files are included; unrelated upstream tools, fixtures, and developer documents are excluded. This source snapshot is scanned before upload.
 - Public GitHub account/repository URLs are intentional publishing and dependency addresses. No private device identifiers or personal signing-team identifiers are included.
 
+The 0.1.4 audio-selection repair includes a generated sine-wave audio fixture. Live verification against a user-supplied video keeps the URL, track report, and downloaded media outside the publication tree. The source, fixture, APK, and ZIPs receive the same checks before upload.
+
 Recheck future releases:
 
 ```sh

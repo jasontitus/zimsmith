@@ -100,6 +100,15 @@ async fn rebuild_job(
         .map_err(|e| format!("{e:#}"))
 }
 
+#[tauri::command]
+async fn repair_youtube_audio(engine: State<'_, Engine>, id: String) -> Result<Job, String> {
+    engine
+        .repair_youtube_audio(&id)
+        .await
+        .map(Job::view)
+        .map_err(|e| format!("{e:#}"))
+}
+
 fn archive_filename(title: &str, id: &str, revision: u64) -> String {
     let name: String = title
         .chars()
@@ -383,6 +392,7 @@ pub fn run() {
             build_job,
             edit_job,
             rebuild_job,
+            repair_youtube_audio,
             export_archive,
             open_archive
         ])

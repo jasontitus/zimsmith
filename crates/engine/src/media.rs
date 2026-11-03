@@ -269,7 +269,12 @@ pub async fn download(record: &Record) -> Result<()> {
     if native {
         match super::native_media::download(record).await {
             Ok(()) => return Ok(()),
-            Err(error) if cfg!(any(target_os = "ios", target_os = "android")) => return Err(error),
+            Err(error)
+                if cfg!(any(target_os = "ios", target_os = "android"))
+                    || error.is::<crate::youtube_audio::OriginalAudioUnavailable>() =>
+            {
+                return Err(error)
+            }
             Err(error) => {
                 record
                     .log(
@@ -319,13 +324,15 @@ pub async fn download(record: &Record) -> Result<()> {
                         "--continue",
                         "--no-overwrites",
                         "--restrict-filenames",
+                        "--format-sort",
+                        "lang",
                         "--format",
                         "best[ext=mp4]/best",
                         "--max-filesize",
                     ])
                     .arg(format!("{}M", snapshot.config.max_resource_mb))
                     .args(["--print", "after_move:filepath", "--output"])
-                    .arg(media_dir.join(format!("{}.%(ext)s", entry.id)))
+                    .arg(media_dir.join(format!("{}-ytdlp-v2.%(ext)s", entry.id)))
                     .arg("--")
                     .arg(&entry.url)
                     .output(),
@@ -365,6 +372,7 @@ pub async fn download(record: &Record) -> Result<()> {
                         let e = j.entries.iter_mut().find(|e| e.id == entry.id).unwrap();
                         e.state = "done".into();
                         e.media_file = Some(filename);
+                        e.media_audio = None;
                         e.size = Some(size);
                         e.error = None;
                         j.bytes += size;

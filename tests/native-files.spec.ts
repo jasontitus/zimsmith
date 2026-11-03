@@ -169,3 +169,114 @@ test("phone controls retain scale and finished archives use native save/open com
   );
   await expect(page.getByRole("alert")).toHaveCount(0);
 });
+
+test("completed native YouTube collection can repair its original audio", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const w = window as unknown as {
+      isTauri: boolean;
+      __TAURI_INTERNALS__: {
+        invoke: (command: string, args?: unknown) => Promise<unknown>;
+      };
+      repairArgs: unknown;
+    };
+    w.isTauri = true;
+    const job = {
+      id: "youtube-fixture",
+      status: "completed",
+      phase: "package",
+      entries: [
+        {
+          id: "video-one",
+          title: "Video one",
+          url: "https://www.youtube.com/watch?v=fixture1234",
+          selected: true,
+          state: "done",
+          size: 100,
+          duration: 1,
+          depth: 0,
+          error: null,
+        },
+      ],
+      config: {
+        title: "Video collection",
+        url: "https://www.youtube.com/playlist?list=fixture",
+        kind: "media",
+        delay_ms: 1000,
+        language: "eng",
+      },
+      created_at: 1,
+      updated_at: 1,
+      bytes: 100,
+      output_bytes: 200,
+      retry_at: null,
+      error: null,
+      logs: [],
+      requests: 1,
+      auto_start_item_limit: null,
+      archive_template: "screening_room",
+    };
+    w.__TAURI_INTERNALS__ = {
+      invoke: async (command, args) => {
+        if (command === "archive_templates")
+          return [
+            {
+              id: "screening_room",
+              name: "Screening Room",
+              description: "Gallery",
+            },
+          ];
+        if (command === "get_settings")
+          return {
+            auto_start_small_jobs: true,
+            auto_start_item_limit: 100,
+            archive_template: "screening_room",
+          };
+        if (command === "capabilities")
+          return {
+            platform: "ios",
+            version: "0.1.4",
+            local_execution: true,
+            yt_dlp: { available: false, detail: "RustyPipe" },
+            zimwriterfs: { available: true, detail: "zimru" },
+          };
+        if (command === "list_jobs") return [job];
+        if (command === "get_job") return job;
+        if (command === "repair_youtube_audio") {
+          w.repairArgs = args;
+          job.status = "downloading";
+          job.phase = "download";
+          return job;
+        }
+        throw new Error(`Unexpected command: ${command}`);
+      },
+    };
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: "Details for Video collection", exact: true })
+    .click();
+  const repair = page.getByRole("button", {
+    name: "Repair original audio",
+    exact: true,
+  });
+  await expect(repair).toBeVisible();
+  await expect(
+    page.getByText(/Matching saved video files are reused/),
+  ).toBeVisible();
+  await repair.click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as unknown as { repairArgs: unknown }).repairArgs,
+      ),
+    )
+    .toEqual({ id: "youtube-fixture" });
+  await expect(page.getByRole("status")).toContainText(
+    "Repairing original audio",
+  );
+  await expect(repair).toHaveCount(0);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});

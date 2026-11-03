@@ -6,6 +6,7 @@ mod native_media;
 pub mod templates;
 mod thumbnails;
 pub mod web;
+pub mod youtube_audio;
 mod youtube_playlist;
 
 use anyhow::{Context, Result};
@@ -407,6 +408,31 @@ impl Engine {
         self.launch(record)?;
         self.get(id).await
     }
+    /// Re-resolve YouTube audio without rescanning or changing the approved selection.
+    pub async fn repair_youtube_audio(&self, id: &str) -> Result<Job> {
+        let record = self.record(id).await?;
+        anyhow::ensure!(
+            !record.running.load(Ordering::SeqCst),
+            "Pause the running job and wait for it to stop before repairing audio"
+        );
+        {
+            let mut current = record.job.lock().await;
+            let mut next = current.clone();
+            next.prepare_original_audio_repair()?;
+            let history = record.dir.join("audio-repair-history");
+            tokio::fs::create_dir_all(&history).await?;
+            tokio::fs::copy(
+                record.dir.join("job.json"),
+                history.join(format!("{}.json", uuid::Uuid::new_v4())),
+            )
+            .await?;
+            record.save(&next).await?;
+            *current = next;
+        }
+        self.launch(record)?;
+        self.get(id).await
+    }
+
     /// Repackage only: never send completed content through scan/download again.
     pub async fn rebuild(&self, id: &str, template: ArchiveTemplate) -> Result<Job> {
         let record = self.record(id).await?;

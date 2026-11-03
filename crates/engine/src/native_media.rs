@@ -7,12 +7,12 @@ use crate::{
 use anyhow::{bail, Context, Result};
 use rustypipe::{
     client::{ClientType, RustyPipe},
-    model::{paginator::Paginator, AudioCodec, UrlTarget, VideoCodec, VideoItem},
+    model::{paginator::Paginator, UrlTarget, VideoItem, VideoPlayer},
 };
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 
-fn youtube(url: &url::Url) -> bool {
+pub(crate) fn youtube(url: &url::Url) -> bool {
     matches!(
         url.host_str(),
         Some(
@@ -251,6 +251,49 @@ pub async fn scan(record: &Record) -> Result<()> {
     Ok(())
 }
 
+async fn original_audio_player(
+    record: &Record,
+    rp: &RustyPipe,
+    source: &url::Url,
+    video: &str,
+    delay_ms: u64,
+) -> Result<VideoPlayer> {
+    let clients = [ClientType::VisionOs, ClientType::Ios, ClientType::Android];
+    let mut start = 0;
+    loop {
+        pace(source, Duration::from_millis(delay_ms)).await;
+        let player = rp
+            .query()
+            .player_from_clients(video, &clients[start..])
+            .await?;
+        anyhow::ensure!(
+            player.drm.is_none() && !player.details.is_live,
+            "Protected and live streams are not supported"
+        );
+        match crate::youtube_audio::select(&player) {
+            Ok(_) => return Ok(player),
+            Err(error) => {
+                start = clients
+                    .iter()
+                    .position(|c| *c == player.client_type)
+                    .unwrap_or(clients.len())
+                    + 1;
+                if start >= clients.len() {
+                    return Err(error.context("Could not identify playable original audio with the available player profiles"));
+                }
+                record
+                    .log(
+                        "warning",
+                        format!(
+                            "{error}. Trying another player profile; no dubbed audio was selected."
+                        ),
+                    )
+                    .await?;
+            }
+        }
+    }
+}
+
 pub async fn download(record: &Record) -> Result<()> {
     let job = record.job.lock().await.clone();
     let source = http_url(&job.config.url)?;
@@ -281,68 +324,29 @@ pub async fn download(record: &Record) -> Result<()> {
         let result: Result<(String, Option<String>, u64)> = async {
             let mut user_agent = None;
             let (url, ext, identity, audio, description) = if let Some(rp) = &rp {
-                pace(&source, Duration::from_millis(job.config.delay_ms)).await;
                 let video = http_url(&item.url)?
                     .query_pairs()
                     .find(|(k, _)| k == "v")
                     .map(|(_, v)| v.into_owned())
                     .context("Missing video ID")?;
-                // Prefer broadly playable codecs. Packaging combines separate MP4
-                // tracks locally so readers use a single audio/video clock.
-                let player = rp
-                    .query()
-                    .player_from_clients(
-                        &video,
-                        &[ClientType::VisionOs, ClientType::Ios, ClientType::Android],
+                let player =
+                    original_audio_player(record, rp, &source, &video, job.config.delay_ms).await?;
+                user_agent = Some(rp.query().user_agent(player.client_type).into_owned());
+                let selected = crate::youtube_audio::select(&player)?;
+                record
+                    .log(
+                        "info",
+                        format!("{} · {}", item.title, selected.audio_note()),
                     )
                     .await?;
-                user_agent = Some(rp.query().user_agent(player.client_type).into_owned());
-                anyhow::ensure!(
-                    player.drm.is_none() && !player.details.is_live,
-                    "Protected and live streams are not supported"
-                );
-                let combined = player
-                    .video_streams
-                    .iter()
-                    .filter(|s| s.drm_track_type.is_none())
-                    .max_by_key(|s| (s.height <= 720, s.codec == VideoCodec::Avc1, s.height));
-                let stream = combined
-                    .or_else(|| {
-                        player
-                            .video_only_streams
-                            .iter()
-                            .filter(|s| s.drm_track_type.is_none() && s.mime.contains("mp4"))
-                            .max_by_key(|s| {
-                                (s.height <= 720, s.codec == VideoCodec::Avc1, s.height)
-                            })
-                    })
-                    .context("No playable video stream available from the provider")?;
-                let audio = if combined.is_none() {
-                    let a = player
-                        .audio_streams
-                        .iter()
-                        .filter(|s| s.drm_track_type.is_none())
-                        .max_by_key(|s| {
-                            (
-                                s.codec == AudioCodec::Mp4a,
-                                s.mime.contains("mp4"),
-                                s.bitrate,
-                            )
-                        })
-                        .context("No audio track available")?;
-                    Some((
+                let stream = selected.video;
+                let audio = selected.audio.map(|a| {
+                    (
                         a.url.clone(),
-                        if a.mime.contains("mp4") {
-                            "m4a"
-                        } else {
-                            "webm"
-                        }
-                        .to_string(),
-                        format!("{video}:{}", a.itag),
-                    ))
-                } else {
-                    None
-                };
+                        "m4a".to_owned(),
+                        crate::youtube_audio::audio_identity(&video, a),
+                    )
+                });
                 let ext = if stream.mime.contains("webm") {
                     "webm"
                 } else {
@@ -448,6 +452,9 @@ pub async fn download(record: &Record) -> Result<()> {
                         j.log("error", format!("{}: {message}", item.title));
                     })
                     .await?;
+                if error.is::<crate::youtube_audio::OriginalAudioUnavailable>() {
+                    return Err(error);
+                }
                 if error
                     .downcast_ref::<MediaHttpError>()
                     .is_some_and(|e| matches!(e.0, 401 | 403))
@@ -791,6 +798,108 @@ mod tests {
     };
 
     #[tokio::test]
+    async fn replaces_legacy_or_dubbed_audio_receipts_and_reuses_verified_original() {
+        let gets = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .route(
+                "/audio.m4a",
+                any(
+                    |State(gets): State<Arc<AtomicUsize>>, method: Method| async move {
+                        if method == Method::GET {
+                            gets.fetch_add(1, Ordering::SeqCst);
+                        }
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header("Content-Length", "5")
+                            .header("ETag", "\"original\"")
+                            .body(if method == Method::HEAD {
+                                Body::empty()
+                            } else {
+                                Body::from("right")
+                            })
+                            .unwrap()
+                    },
+                ),
+            )
+            .with_state(gets.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let source = http_url(&format!("http://{addr}/audio.m4a")).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let engine = crate::Engine::open(temp.path()).await.unwrap();
+        engine
+            .update_settings(Settings {
+                auto_start_small_jobs: false,
+                ..Settings::default()
+            })
+            .await
+            .unwrap();
+        let job = engine
+            .create(NewJob {
+                url: source.to_string(),
+                title: "Audio cache fixture".into(),
+                kind: SourceKind::Media,
+                max_items: 1,
+                max_depth: 0,
+                delay_ms: 1000,
+                max_resource_mb: 1,
+                language: "eng".into(),
+                description: "Fixture".into(),
+                creator: "Fixture".into(),
+                include_assets: false,
+            })
+            .await
+            .unwrap();
+        let record = engine.record(&job.id).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while record.running.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let audio: rustypipe::model::AudioStream=serde_json::from_value(serde_json::json!({"url":source.as_str(),"itag":140,"bitrate":128000,"average_bitrate":128000,"size":5,"mime":"audio/mp4","format":"m4a","codec":"mp4a","track":{"id":"en.4","lang":"en","lang_name":"English original","is_default":true,"track_type":"original"},"drm_systems":[]})).unwrap();
+        let original = crate::youtube_audio::audio_identity("fixture1234", &audio);
+        let mut dubbed = audio.clone();
+        dubbed.track.as_mut().unwrap().id = "ja.10".into();
+        dubbed.track.as_mut().unwrap().lang = Some("ja".into());
+        dubbed.track.as_mut().unwrap().track_type =
+            Some(rustypipe::model::AudioTrackType::DubbedAuto);
+        let path = record.dir.join("audio.m4a");
+        let receipt = path.with_extension("complete.json");
+        for stale in [
+            "fixture1234:140".to_owned(),
+            crate::youtube_audio::audio_identity("fixture1234", &dubbed),
+        ] {
+            tokio::fs::write(&path, b"wrong").await.unwrap();
+            tokio::fs::write(&receipt, serde_json::to_vec(&(stale, 5u64)).unwrap())
+                .await
+                .unwrap();
+            gets.store(0, Ordering::SeqCst);
+            assert_eq!(
+                stream_file_with_policy(&record, &source, &path, &original, None, false)
+                    .await
+                    .unwrap(),
+                5
+            );
+            assert_eq!(tokio::fs::read(&path).await.unwrap(), b"right");
+            assert_eq!(gets.load(Ordering::SeqCst), 1);
+            stream_file_with_policy(&record, &source, &path, &original, None, false)
+                .await
+                .unwrap();
+            assert_eq!(
+                gets.load(Ordering::SeqCst),
+                1,
+                "Verified original audio should be reused on resume"
+            );
+        }
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn downloads_all_bounded_ranges_and_does_not_retry_forbidden() {
         let data = Arc::new(
             (0..(8 * 1024 * 1024 + 17))
@@ -930,7 +1039,8 @@ mod tests {
             .unwrap();
         let job = engine
             .create(NewJob {
-                url: "https://www.youtube.com/watch?v=O6VZaBM2Zr4".into(),
+                url: std::env::var("ZIMSMITH_TEST_VIDEO_URL")
+                    .unwrap_or_else(|_| "https://www.youtube.com/watch?v=O6VZaBM2Zr4".into()),
                 title: "YouTube native transfer check".into(),
                 kind: SourceKind::Media,
                 max_items: 1,
@@ -1005,7 +1115,7 @@ mod tests {
         assert!(archive
             .get_text("index.html")
             .unwrap()
-            .contains("Scary Halloween"));
+            .contains(&crate::archive::escape(&complete.entries[0].title)));
         let entry = &complete.entries[0];
         let page = archive.get_text(&format!("{}.html", entry.id)).unwrap();
         assert_eq!(page.matches("<video ").count(), 1);
@@ -1026,6 +1136,62 @@ mod tests {
             )
             .await
             .unwrap();
+        }
+        if let Ok(expected) = std::env::var("ZIMSMITH_EXPECT_AUDIO_LANGUAGE") {
+            assert!(complete.logs.iter().any(|l| l.message.contains("Audio:")
+                && l.message.contains(&expected)
+                && l.message.contains("original")));
+        }
+        if std::env::var_os("ZIMSMITH_TEST_AUDIO_REPAIR").is_some() {
+            let entry = complete.entries[0].clone();
+            let video_path = record
+                .dir
+                .join("media")
+                .join(entry.media_file.as_ref().unwrap());
+            let modified = tokio::fs::metadata(&video_path)
+                .await
+                .unwrap()
+                .modified()
+                .unwrap();
+            let audio_path = record
+                .dir
+                .join("media")
+                .join(entry.media_audio.as_ref().expect("Separate original audio"));
+            let size = tokio::fs::metadata(&audio_path).await.unwrap().len();
+            tokio::fs::write(
+                audio_path.with_extension("complete.json"),
+                serde_json::to_vec(&("legacy-itag-only", size)).unwrap(),
+            )
+            .await
+            .unwrap();
+            engine.repair_youtube_audio(&job.id).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(300), async {
+                while record.running.load(Ordering::SeqCst) {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            })
+            .await
+            .unwrap();
+            let repaired = engine.get(&job.id).await.unwrap();
+            assert_eq!(repaired.status, "completed", "{:?}", repaired.error);
+            assert_eq!(repaired.archive_revision, complete.archive_revision + 1);
+            assert_eq!(
+                tokio::fs::metadata(&video_path)
+                    .await
+                    .unwrap()
+                    .modified()
+                    .unwrap(),
+                modified,
+                "Matching video should not be downloaded again"
+            );
+            let receipt: (String, u64) = serde_json::from_slice(
+                &tokio::fs::read(audio_path.with_extension("complete.json"))
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            assert!(receipt.0.starts_with("youtube-audio-v2:"));
+            println!("Live original-audio repair rebuilt the ZIM and reused the saved video.");
         }
         println!(
             "Completed native video+audio download and valid ZIM: {} bytes",

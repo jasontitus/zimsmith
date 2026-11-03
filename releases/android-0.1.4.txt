@@ -1,0 +1,6 @@
+Zimsmith 0.1.4 preview.
+YouTube downloads now prefer the original audio track over higher-bitrate dubs, and the Activity log shows the chosen language.
+New Repair original audio action in YouTube collection Details: reselect audio and rebuild an existing collection while reusing matching video downloads.
+Audio caches distinguish language tracks even when YouTube assigns them the same format number.
+The archive-language setting is now labeled clearly as archive metadata; it does not select a dubbed soundtrack.
+Update installs over public 0.1.2/0.1.3 APKs using the same signing key. Save/open the repaired ZIM revision after repair completes; previously exported copies remain unchanged.

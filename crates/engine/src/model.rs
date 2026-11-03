@@ -264,6 +264,51 @@ impl Job {
         }
     }
 
+    pub(crate) fn prepare_original_audio_repair(&mut self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.config.kind == SourceKind::Media
+                && super::native_media::youtube(&super::web::http_url(&self.config.url)?),
+            "Original-audio repair is only available for YouTube collections"
+        );
+        anyhow::ensure!(
+            ["completed", "failed", "paused"].contains(&self.status.as_str())
+                && ["download", "package"].contains(&self.phase.as_str()),
+            "Finish the scan and pause any active job before repairing audio"
+        );
+        let selected = self.entries.iter().filter(|e| e.selected).count();
+        anyhow::ensure!(
+            selected > 0
+                && self
+                    .entries
+                    .iter()
+                    .filter(|e| e.selected)
+                    .all(|e| e.state != "scan_failed"),
+            "Select available videos before repairing audio"
+        );
+        if self.output.is_some() {
+            self.archive_revision = self
+                .archive_revision
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("Archive revision limit reached"))?;
+        }
+        for entry in self.entries.iter_mut().filter(|e| e.selected) {
+            entry.state = "pending".into();
+            entry.error = None;
+        }
+        self.phase = "download".into();
+        self.status = "downloading".into();
+        self.error = None;
+        self.progress = Progress {
+            label: "Repairing original YouTube audio".into(),
+            total: Some(selected as u64),
+            unit: "items".into(),
+            updated_at: now(),
+            ..Progress::default()
+        };
+        self.log("info", "Re-resolving original audio for the selected videos. Matching video downloads are reused; audio may be downloaded again. The existing ZIM stays intact until a replacement is built.");
+        Ok(())
+    }
+
     pub fn can_auto_start(&self) -> bool {
         self.auto_start_item_limit.is_some_and(|limit| {
             !self.scan_truncated
@@ -318,4 +363,62 @@ pub struct Capabilities {
     pub yt_dlp: ToolStatus,
     pub zimwriterfs: ToolStatus,
     pub data_dir: String,
+}
+
+#[cfg(test)]
+mod audio_repair_tests {
+    use super::*;
+    fn completed() -> Job {
+        serde_json::from_value(serde_json::json!({
+            "id":"repair-fixture", "config":{"url":"https://www.youtube.com/playlist?list=fixture","title":"Fixture","kind":"media","max_items":10,"max_depth":0,"delay_ms":1000,"max_resource_mb":50,"language":"eng","description":"Fixture","creator":"Fixture","include_assets":false},
+            "status":"completed","phase":"package","created_at":1,"updated_at":1,"archive_revision":3,
+            "entries":[{"id":"one","url":"https://www.youtube.com/watch?v=fixture1234","title":"One","depth":0,"selected":true,"state":"done","size":20,"duration":1,"error":null,"text":"","assets":[],"media_file":"one.mp4","media_audio":"one-audio.m4a"},
+            {"id":"two","url":"https://www.youtube.com/watch?v=fixture5678","title":"Two","depth":0,"selected":false,"state":"done","size":20,"duration":1,"error":null,"text":"","assets":[],"media_file":"two.mp4","media_audio":null}],
+            "queue":[],"visited":[],"resources":{},"logs":[],"error":null,"output":"archive.zim","output_bytes":42,"retry_at":9999999999u64,"requests":10,"bytes":40
+        })).unwrap()
+    }
+    #[test]
+    fn repairs_only_approved_items_and_preserves_video_archive_and_cooldown() {
+        let mut job = completed();
+        let source = job.config.url.clone();
+        job.prepare_original_audio_repair().unwrap();
+        assert_eq!(job.phase, "download");
+        assert_eq!(job.status, "downloading");
+        assert_eq!(job.archive_revision, 4);
+        assert_eq!(job.config.url, source);
+        assert_eq!(job.retry_at, Some(9999999999));
+        assert_eq!(job.output.as_deref(), Some("archive.zim"));
+        assert_eq!(job.entries[0].state, "pending");
+        assert_eq!(job.entries[0].media_file.as_deref(), Some("one.mp4"));
+        assert_eq!(job.entries[0].media_audio.as_deref(), Some("one-audio.m4a"));
+        assert!(!job.entries[1].selected);
+        assert_eq!(job.entries[1].state, "done");
+    }
+    #[test]
+    fn rejects_active_unscanned_non_youtube_and_unavailable_selections_without_changes() {
+        for (status, phase, url) in [
+            (
+                "downloading",
+                "download",
+                "https://www.youtube.com/watch?v=fixture1234",
+            ),
+            (
+                "paused",
+                "scan",
+                "https://www.youtube.com/watch?v=fixture1234",
+            ),
+            ("completed", "package", "https://media.example/clip.mp4"),
+        ] {
+            let mut job = completed();
+            job.status = status.into();
+            job.phase = phase.into();
+            job.config.url = url.into();
+            let before = serde_json::to_vec(&job).unwrap();
+            assert!(job.prepare_original_audio_repair().is_err());
+            assert_eq!(serde_json::to_vec(&job).unwrap(), before);
+        }
+        let mut job = completed();
+        job.entries[0].state = "scan_failed".into();
+        assert!(job.prepare_original_audio_repair().is_err());
+    }
 }

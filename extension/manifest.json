@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Zimsmith",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Crawl websites and build searchable offline ZIM archives entirely in your browser.",
   "permissions": ["unlimitedStorage"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],

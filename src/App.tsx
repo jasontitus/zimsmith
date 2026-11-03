@@ -35,7 +35,7 @@ import {
   X,
 } from "lucide-react";
 import { AndroidUpdates } from "./AndroidUpdates";
-import { api, native } from "./api";
+import { api, native, repairYouTubeAudio } from "./api";
 import { browserOnly, extensionMode } from "./browser/client";
 import brandIcon from "./assets/zimsmith-icon.png";
 import { ArchiveTemplates } from "./ArchiveTemplates";
@@ -678,7 +678,7 @@ export default function App() {
                           </div>
                           <div>
                             <label htmlFor="language">
-                              Language (ISO 639-3)
+                              Archive language (ISO 639-3)
                             </label>
                             <input
                               id="language"
@@ -690,6 +690,10 @@ export default function App() {
                                 update("language", e.target.value)
                               }
                             />
+                            <p className="settings-note">
+                              Labels the ZIM; content is not translated. YouTube
+                              downloads use original audio.
+                            </p>
                           </div>
                         </div>
                         <label htmlFor="description">Short description</label>
@@ -1124,6 +1128,42 @@ export default function App() {
                   </div>
                 </div>
               )}
+              {native &&
+                job.config.kind === "media" &&
+                /^https?:\/\/(?:www\.|m\.|music\.)?(?:youtube\.com|youtu\.be)(?:\/|$)/i.test(
+                  job.config.url,
+                ) &&
+                ["completed", "failed", "paused"].includes(job.status) &&
+                job.phase !== "scan" &&
+                job.entries.some((e) => e.selected) && (
+                  <section
+                    className="panel rebuild-panel"
+                    aria-labelledby="repair-audio-title"
+                  >
+                    <div>
+                      <h2 id="repair-audio-title">Wrong audio language?</h2>
+                      <p>
+                        Reselect YouTube’s original audio and rebuild this
+                        collection. Matching saved video files are reused; audio
+                        may download again. Exported ZIM copies stay unchanged.
+                      </p>
+                    </div>
+                    <button
+                      className="button secondary"
+                      disabled={busy}
+                      onClick={() =>
+                        void action(async () => {
+                          await repairYouTubeAudio(job.id);
+                          setToast(
+                            "Repairing original audio and rebuilding the ZIM",
+                          );
+                        })
+                      }
+                    >
+                      <RefreshCw size={17} /> Repair original audio
+                    </button>
+                  </section>
+                )}
               {job.status === "completed" && templates.length > 0 && (
                 <section
                   className="panel rebuild-panel"

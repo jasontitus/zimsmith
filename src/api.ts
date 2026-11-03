@@ -86,3 +86,8 @@ const bridgedApi = {
   },
 };
 export const api = browserOnly ? browserApi : bridgedApi;
+
+export async function repairYouTubeAudio(id: string): Promise<Job> {
+  if (!native) throw new Error("YouTube audio repair requires the native app.");
+  return invoke<Job>("repair_youtube_audio", { id });
+}

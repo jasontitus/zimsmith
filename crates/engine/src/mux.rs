@@ -280,6 +280,29 @@ mod tests {
         }
     }
     #[test]
+    fn replaces_embedded_audio_when_reusing_a_combined_video_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let video = fixtures.join("sync-bframes-video.mp4");
+        let wrong = fixtures.join("alternate-audio.m4a");
+        let original = fixtures.join("sync-audio.m4a");
+        assert_ne!(
+            std::fs::read(&wrong).unwrap(),
+            std::fs::read(&original).unwrap()
+        );
+        let combined = dir.path().join("cached-with-wrong-audio.mp4");
+        remux(
+            &video,
+            &wrong,
+            &combined,
+            &AtomicBool::new(false),
+            &AtomicU64::new(0),
+        )
+        .unwrap();
+        verify(&combined, &original, &dir.path().join("repaired.mp4"));
+    }
+
+    #[test]
     fn preserves_fragmented_av1_bframes_aac_priming_and_every_sample_timestamp() {
         let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
         let temp = tempfile::tempdir().unwrap();
