@@ -2,7 +2,7 @@
 members = ["crates/engine", "crates/worker", "crates/mobile-files", "src-tauri"]
 default-members = ["crates/engine", "crates/worker"]
 resolver = "2"
-exclude = ["vendor/rustypipe"]
+exclude = ["vendor/rustypipe", "vendor/md-5"]
 
 [workspace.package]
 license = "GPL-3.0-only"
@@ -15,3 +15,7 @@ tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 zim-engine = { path = "crates/engine" }
+
+[patch.crates-io]
+# Upstream 0.10.6 enables GNU-style assembly on MSVC; use its Rust backend there.
+md-5 = { path = "vendor/md-5" }

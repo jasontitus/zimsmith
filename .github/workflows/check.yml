@@ -19,6 +19,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - run: npm ci
       - run: npm run build
+      - if: runner.os == 'Windows'
+        name: Check portable MD5 backend with the requested asm feature
+        run: cargo test --manifest-path vendor/md-5/Cargo.toml --features asm --locked
       - run: cargo test -p zim-engine -p zim-worker --locked
       - run: cargo check -p zim-studio --locked
   ios-engine:

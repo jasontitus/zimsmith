@@ -20,6 +20,7 @@ Findings and resolutions:
 - An earlier private Android build embedded local home-directory paths. Public builds remap Rust and native C/C++ source paths before compilation; the rebuilt APK is scanned again before upload.
 - Gitleaks flags two fixed pagination-token assertions in the vendored RustyPipe channel tests. These are public, deterministic request-pagination fixtures, not authentication credentials. The findings were manually reviewed without blanket exclusions for vendored code.
 - Email-like strings in first-party source are URL-validation test fixtures or a CSP directive. Vendored author attribution and public provider/channel-description fixtures were retained as upstream material.
+- A follow-up Windows build patch vendors RustCrypto md-5 0.10.6 with its original licenses and upstream vectors. The added source is reviewed with the same PII and credential checks before upload; only platform/backend selection is changed.
 - Public GitHub account/repository URLs are intentional publishing and dependency addresses. No private device identifiers or personal signing-team identifiers are included.
 
 Recheck future releases:

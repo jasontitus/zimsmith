@@ -108,6 +108,8 @@ npm run android -- dev
 npm run android -- build --debug --apk --ci
 ```
 
+Windows source builds should use the current `main` branch. The initial `v0.1.2` source tag predates the MSVC MD5 backend compatibility fix; the Android APK attached to that preview is unaffected. The original RustCrypto MD5 algorithm and upstream test vectors are preserved in the compatibility patch.
+
 The mobile wrapper selects rustup's compiler explicitly, statically builds LZMA, and configures QuickJS binding generation with the Android NDK sysroot. Set `ANDROID_HOME`, `NDK_HOME`, and `JAVA_HOME` for nonstandard installations. Android builds currently select arm64; other ABIs need matching bindgen/NDK configuration.
 
 Signed iOS builds require your `APPLE_DEVELOPMENT_TEAM`. Generated projects under `src-tauri/gen/` can be regenerated. **Save ZIM file** opens the native Files/document picker on iOS and Android; choose Downloads, iCloud Drive, or another folder. Canceling keeps the completed archive available for another attempt. Desktop exports go to Downloads with the archive title in the filename.
@@ -247,6 +249,7 @@ Template tests also check saved selection and job-level style snapshots, escaped
 - `crates/engine/`: crawler, extraction, persistence, rewriting, search, and ZIM writer.
 - `crates/mobile-files/`: native mobile save pickers, ZIM viewer handoff, and webview zoom configuration.
 - `vendor/rustypipe/`: pinned TeamPiped RustyPipe library snapshot.
+- `vendor/md-5/`: RustCrypto 0.10.6 with an MSVC backend-selection fix; upstream algorithm code and licenses retained.
 - `crates/worker/`: optional browser-development API.
 - `tests/`: browser workflow tests.
 
