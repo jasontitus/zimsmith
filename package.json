@@ -1,0 +1,53 @@
+{
+  "name": "zim-studio",
+  "version": "0.1.2",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc -b && vite build",
+    "web:build": "tsc -b && node scripts/build-web.mjs",
+    "web:dev": "vite --mode browser --host 127.0.0.1 --port 1422",
+    "web:templates": "cargo run -p zim-engine --example browser_templates",
+    "extension:build": "tsc -b && node scripts/build-web.mjs --extension",
+    "tauri": "tauri",
+    "worker": "cargo run -p zim-worker",
+    "test": "cargo test -p zim-engine -p zim-worker",
+    "test:e2e": "playwright test",
+    "test:browser": "npm run extension:build && npm run web:build && playwright test tests/browser-extension.spec.ts",
+    "dev:api": "cargo run -p zim-worker",
+    "ios": "node scripts/mobile.mjs ios",
+    "android": "node scripts/mobile.mjs android",
+    "tools:update": "node scripts/update-sources.mjs",
+    "format": "prettier --write src tests scripts vite.config.ts playwright.config.ts package.json tsconfig.json README.md",
+    "format:check": "prettier --check src tests scripts vite.config.ts playwright.config.ts package.json tsconfig.json README.md",
+    "format:rust": "cargo fmt -p zim-engine -p zim-worker -p zim-studio -p tauri-plugin-mobile-files",
+    "format:rust:check": "cargo fmt -p zim-engine -p zim-worker -p zim-studio -p tauri-plugin-mobile-files --check",
+    "icons:sync": "node scripts/sync-icons.mjs",
+    "android:direct": "node scripts/android-direct.mjs",
+    "release:android": "node scripts/prepare-android-release.mjs"
+  },
+  "dependencies": {
+    "@fontsource-variable/dm-sans": "^5.3.0",
+    "@fontsource-variable/manrope": "^5.3.0",
+    "@tauri-apps/api": "^2.9.0",
+    "linkedom": "^0.18.15",
+    "lucide-react": "^0.468.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "robots-parser": "^3.0.1",
+    "spark-md5": "^3.0.2"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.0",
+    "@tauri-apps/cli": "^2.9.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/spark-md5": "^3.0.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "prettier": "^3.9.10",
+    "typescript": "~5.7.2",
+    "vite": "^6.1.0"
+  },
+  "license": "GPL-3.0-only"
+}

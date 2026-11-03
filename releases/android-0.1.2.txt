@@ -1,0 +1,6 @@
+First public Zimsmith preview.
+Crawl websites and supported media collections on your device, then build searchable offline ZIM archives.
+Pause and resume jobs, edit failed crawls, choose archive templates, and rebuild from saved downloads.
+Direct Android builds include automatic/manual update checks and user-confirmed downloads through your browser.
+Public Android releases use a dedicated release signing key. Earlier development-signed APKs cannot be updated in place with this key; save your archives before replacing a development installation.
+This is an early preview: keep the app open while crawling on phones. Browser builds support HTML websites and direct media, with source CORS restrictions; YouTube extraction is native-only.

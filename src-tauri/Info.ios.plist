@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+	<key>UTImportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>org.openzim.zim</string>
+			<key>UTTypeDescription</key>
+			<string>ZIM archive</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>zim</string>
+				</array>
+				<key>public.mime-type</key>
+				<array>
+					<string>application/x-zim</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
+	<key>CFBundleDisplayName</key>
+	<string>Zimsmith</string>
+	<key>CFBundleVersion</key>
+	<string>3</string>
+</dict>
+</plist>

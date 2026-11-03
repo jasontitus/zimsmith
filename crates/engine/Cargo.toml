@@ -1,0 +1,41 @@
+[package]
+license.workspace = true
+name = "zim-engine"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+kiwix-index = ["dep:xapianbuilder"]
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+uuid.workspace = true
+url = "2"
+scraper = "0.22"
+lol_html = "2"
+sha2 = "0.10"
+regex = "1"
+httpdate = "1"
+robotstxt = "0.3"
+png = "0.17"
+atomic-write-file = "0.2"
+zimru = { git = "https://github.com/jasontitus/zimru", rev = "061afbc2920c78fc4ecb7211cb9ef4f3655dba35" }
+xapianbuilder = { git = "https://github.com/jasontitus/xapianbuilder", rev = "13ff368991850f35ecb2e60037c6385d9992cbdc", optional = true }
+# Pinned TeamPiped fork snapshot; see vendor/rustypipe/ZIM-STUDIO.md.
+rustypipe = { path = "../../vendor/rustypipe", default-features = false, features = ["rustls-tls-webpki-roots"] }
+mime_guess = "2"
+base64 = "0.22"
+mp4-track = "=0.1.0"
+
+[target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies]
+# QuickJS ships desktop bindings only; generate ABI-correct bindings for phones.
+rquickjs-sys = { version = "0.12", features = ["bindgen"] }
+
+[dev-dependencies]
+tempfile = "3"
+axum = "0.8"

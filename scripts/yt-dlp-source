@@ -1,0 +1,6 @@
+#!/bin/sh
+# Use the fresh source checkout without changing the user's system install.
+set -eu
+task_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+export PYTHONPATH="$task_root/.tools/yt-dlp${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m yt_dlp "$@"

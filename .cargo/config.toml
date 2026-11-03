@@ -1,0 +1,3 @@
+[env]
+# Bundle ZIM compression rather than depending on a developer's system liblzma.
+LZMA_API_STATIC = "1"

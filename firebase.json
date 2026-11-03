@@ -1,0 +1,33 @@
+{
+  "hosting": {
+    "public": "output/hosting",
+    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+    "headers": [
+      {
+        "source": "/updates/**",
+        "headers": [
+          { "key": "Cache-Control", "value": "no-store" },
+          { "key": "Content-Type", "value": "application/json" }
+        ]
+      },
+      {
+        "source": "/downloads/**",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "public,max-age=31536000,immutable"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/vnd.android.package-archive"
+          },
+          { "key": "Content-Disposition", "value": "attachment" }
+        ]
+      },
+      {
+        "source": "/",
+        "headers": [{ "key": "Cache-Control", "value": "no-cache" }]
+      }
+    ]
+  }
+}

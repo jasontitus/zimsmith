@@ -1,0 +1,13 @@
+{
+  "hosts": [
+    "fonts.googleapis.com",
+    "fonts.gstatic.com",
+    "fonts.bunny.net",
+    "cdn.jsdelivr.net",
+    "cdnjs.cloudflare.com",
+    "unpkg.com",
+    "use.typekit.net",
+    "use.fontawesome.com",
+    "i.ytimg.com"
+  ]
+}

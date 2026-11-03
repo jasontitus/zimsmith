@@ -1,0 +1,6 @@
+Direct Android builds can now check for new releases and show release notes.
+Download updates through your browser, then approve Android's installation prompt.
+Update downloads wait until your active crawls are paused.
+Automatic checks, manual checks, and an advanced HTTPS update-source setting are available in Settings.
+Saved update preferences and server cooldowns survive app restarts.
+Recognized static CDN assets download without the artificial page delay, while robots rules and server backoff remain respected.

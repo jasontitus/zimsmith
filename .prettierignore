@@ -1,0 +1,9 @@
+node_modules
+dist
+target
+.tools
+.zim-studio
+src-tauri/gen
+test-results
+output
+Cargo.lock

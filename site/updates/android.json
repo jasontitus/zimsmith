@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "package_id": "org.zimstudio.app",
+  "channel": "direct",
+  "releases": [
+    {
+      "version": "0.1.2",
+      "version_code": 1002,
+      "abi": "arm64-v8a",
+      "min_sdk": 24,
+      "url": "https://github.com/jasontitus/zimsmith/releases/download/v0.1.2/Zimsmith-0.1.2-arm64-v8a-cb9f3d294a7f.apk",
+      "sha256": "cb9f3d294a7f4087e1e16ad9002858c39b7fc4756b496a229b559185cbb1bd78",
+      "certificate_sha256": "f05a21df94164c0695b4e422bb413e2b7e5971ef44ecab3e2666faacb287aa89",
+      "size_bytes": 37866125,
+      "notes": "First public Zimsmith preview.\nCrawl websites and supported media collections on your device, then build searchable offline ZIM archives.\nPause and resume jobs, edit failed crawls, choose archive templates, and rebuild from saved downloads.\nDirect Android builds include automatic/manual update checks and user-confirmed downloads through your browser.\nPublic Android releases use a dedicated release signing key. Earlier development-signed APKs cannot be updated in place with this key; save your archives before replacing a development installation.\nThis is an early preview: keep the app open while crawling on phones. Browser builds support HTML websites and direct media, with source CORS restrictions; YouTube extraction is native-only."
+    }
+  ]
+}
