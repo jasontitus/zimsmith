@@ -2,7 +2,7 @@
 members = ["crates/engine", "crates/worker", "crates/mobile-files", "src-tauri"]
 default-members = ["crates/engine", "crates/worker"]
 resolver = "2"
-exclude = ["vendor/rustypipe", "vendor/md-5"]
+exclude = ["vendor/rustypipe", "vendor/md-5", "vendor/zimru"]
 
 [workspace.package]
 license = "GPL-3.0-only"

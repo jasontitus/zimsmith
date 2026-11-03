@@ -249,6 +249,7 @@ Template tests also check saved selection and job-level style snapshots, escaped
 - `crates/engine/`: crawler, extraction, persistence, rewriting, search, and ZIM writer.
 - `crates/mobile-files/`: native mobile save pickers, ZIM viewer handoff, and webview zoom configuration.
 - `vendor/rustypipe/`: pinned TeamPiped RustyPipe library snapshot.
+- `vendor/zimru/`: pinned MIT-licensed ZIM library source with Unix-only memory-map hints gated for Windows.
 - `vendor/md-5/`: RustCrypto 0.10.6 with an MSVC backend-selection fix; upstream algorithm code and licenses retained.
 - `crates/worker/`: optional browser-development API.
 - `tests/`: browser workflow tests.

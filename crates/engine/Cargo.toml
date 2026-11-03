@@ -24,7 +24,7 @@ httpdate = "1"
 robotstxt = "0.3"
 png = "0.17"
 atomic-write-file = "0.2"
-zimru = { git = "https://github.com/jasontitus/zimru", rev = "061afbc2920c78fc4ecb7211cb9ef4f3655dba35" }
+zimru = { path = "../../vendor/zimru" }
 xapianbuilder = { git = "https://github.com/jasontitus/xapianbuilder", rev = "13ff368991850f35ecb2e60037c6385d9992cbdc", optional = true }
 # Pinned TeamPiped fork snapshot; see vendor/rustypipe/ZIM-STUDIO.md.
 rustypipe = { path = "../../vendor/rustypipe", default-features = false, features = ["rustls-tls-webpki-roots"] }
