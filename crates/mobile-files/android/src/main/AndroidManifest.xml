@@ -1,6 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application>
+        <activity android:name="org.zimstudio.files.ShareLinkActivity"
+            android:exported="true" android:excludeFromRecents="true"
+            android:taskAffinity="" android:noHistory="true" android:launchMode="singleTop"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+                <data android:mimeType="text/uri-list" />
+            </intent-filter>
+        </activity>
         <provider android:name="org.zimstudio.files.ZimFileProvider"
             android:authorities="${applicationId}.zim-files"
             android:exported="false" android:grantUriPermissions="true">

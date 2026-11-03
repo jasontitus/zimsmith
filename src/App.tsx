@@ -40,6 +40,7 @@ import { browserOnly, extensionMode } from "./browser/client";
 import brandIcon from "./assets/zimsmith-icon.png";
 import { ArchiveTemplates } from "./ArchiveTemplates";
 import { JobProgress } from "./JobProgress";
+import { SharedLinks, dismissSharedLink, type SharedLink } from "./SharedLinks";
 import { isNativeMediaUrl, normalizeSourceUrl } from "./source";
 import type {
   ArchiveTemplate,
@@ -111,6 +112,7 @@ export default function App() {
   const [job, setJob] = useState<Job | null>(null);
   const [config, setConfig] = useState<Config>(defaults);
   const [editingJobId, setEditingJobId] = useState<string | null>(null);
+  const [sharedLinkId, setSharedLinkId] = useState<string | null>(null);
   const [advanced, setAdvanced] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -124,6 +126,36 @@ export default function App() {
     useState<ArchiveTemplate | null>(null);
   const lastJob = useRef<string | null>(null);
   const lastStatus = useRef<string | null>(null);
+  const currentForm = useRef({ config, editingJobId, busy, tab });
+  currentForm.current = { config, editingJobId, busy, tab };
+  const reviewSharedLink = useCallback(
+    (link: SharedLink, automatic: boolean) => {
+      if (!link.url || currentForm.current.busy) return;
+      if (
+        automatic &&
+        ((currentForm.current.tab === "create" &&
+          currentForm.current.config.url) ||
+          currentForm.current.editingJobId)
+      )
+        return;
+      const url = normalizeSourceUrl(link.url);
+      setConfig({
+        ...defaults,
+        url,
+        title: link.title,
+        kind: isNativeMediaUrl(url) ? "media" : "website",
+      });
+      setEditingJobId(null);
+      setSharedLinkId(link.id);
+      setSelectedJob(null);
+      setJob(null);
+      setTab("create");
+      setError("");
+      setToast("Ready to scan. Tap Scan shared link to begin.");
+      window.scrollTo(0, 0);
+    },
+    [],
+  );
 
   const refresh = useCallback(async () => {
     try {
@@ -216,6 +248,7 @@ export default function App() {
     setError("");
   };
   const editCrawl = (item: Job) => {
+    setSharedLinkId(null);
     setConfig({ ...item.config });
     setEditingJobId(item.id);
     setAdvanced(true);
@@ -235,10 +268,21 @@ export default function App() {
     setConfig((c) => ({ ...c, [key]: value }));
   const create = () =>
     action(async () => {
+      setToast("");
       const normalized = { ...config, url: normalizeSourceUrl(config.url) };
       const result = editingJobId
         ? await api.editRetry(editingJobId, normalized)
         : await api.create(normalized);
+      if (sharedLinkId) {
+        try {
+          await dismissSharedLink(sharedLinkId);
+          setSharedLinkId(null);
+        } catch {
+          setToast(
+            "Crawl created. The saved share could not be cleared; dismiss it from Shared links.",
+          );
+        }
+      }
       if (editingJobId) setToast("Crawl settings saved. Retrying.");
       setConfig(normalized);
       openJob(result);
@@ -411,6 +455,20 @@ export default function App() {
           </button>
         </header>
         <main className="main-content">
+          {native &&
+            ["ios", "android"].includes(capabilities?.platform || "") && (
+              <SharedLinks
+                selected={sharedLinkId}
+                onReview={reviewSharedLink}
+                onScan={() => {
+                  void create();
+                }}
+                busy={busy}
+                onDismiss={(id) => {
+                  if (sharedLinkId === id) setSharedLinkId(null);
+                }}
+              />
+            )}
           {native && capabilities?.platform === "android" && (
             <AndroidUpdates
               settingsVisible={tab === "settings"}

@@ -4,15 +4,15 @@
   "channel": "direct",
   "releases": [
     {
-      "version": "0.1.5",
-      "version_code": 1005,
+      "version": "0.1.6",
+      "version_code": 1006,
       "abi": "arm64-v8a",
       "min_sdk": 24,
-      "url": "https://github.com/jasontitus/zimsmith/releases/download/v0.1.5/Zimsmith-0.1.5-arm64-v8a-806fc29cc1c5.apk",
-      "sha256": "806fc29cc1c51615466c7f52836e0d55debecb92de68954e7a80ca1a5bc92134",
+      "url": "https://github.com/jasontitus/zimsmith/releases/download/v0.1.6/Zimsmith-0.1.6-arm64-v8a-2aabb5c45d20.apk",
+      "sha256": "2aabb5c45d20eac950e98a2badc6575991e8398c83c761e899db66281131d621",
       "certificate_sha256": "f05a21df94164c0695b4e422bb413e2b7e5971ef44ecab3e2666faacb287aa89",
-      "size_bytes": 37931661,
-      "notes": "Zimsmith 0.1.5 preview.\nFresh Android release alongside the matching iOS build, including the original YouTube audio selection and Repair original audio action introduced in 0.1.4.\nIn Activity, open a YouTube collection’s Details and choose Repair original audio to rebuild it using the original soundtrack. Matching saved videos are reused; audio may download again. Save/open the repaired ZIM after completion; previously exported copies remain unchanged.\nAndroid updates public 0.1.2–0.1.4 installs in place using the same release signing key.\nNo additional crawler behavior changes from 0.1.4."
+      "size_bytes": 38025869,
+      "notes": "Zimsmith 0.1.6 preview.\nShare a website or YouTube URL to Zimsmith from another Android app. The crawl form opens with the URL and source type filled in.\nShared links stay in a private inbox until a crawl is successfully created or the link is dismissed. New shares do not overwrite a form you are already editing.\niOS includes a Share Extension: save the link from the share sheet, then open Zimsmith to review and scan.\nA prominent Scan shared link button starts the crawl directly from the shared-link panel. Sharing alone does not start downloads."
     }
   ]
 }

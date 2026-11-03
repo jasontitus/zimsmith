@@ -36,10 +36,26 @@ class OpenArgs {
 @InvokeArg
 class WebUrlArgs { lateinit var url: String }
 
+@InvokeArg
+class SharedLinkArgs { lateinit var id: String }
+
 class ZimFileProvider : FileProvider()
 
 @TauriPlugin
 class MobileFilesPlugin(private val activity: Activity): Plugin(activity) {
+    @Command
+    fun sharedLinks(invoke: Invoke) {
+        try { invoke.resolve(JSObject().put("items", SharedLinks.list(activity))) }
+        catch (_: Exception) { invoke.reject("Could not read your shared links.") }
+    }
+
+    @Command
+    fun dismissSharedLink(invoke: Invoke) {
+        try {
+            SharedLinks.dismiss(activity, invoke.parseArgs(SharedLinkArgs::class.java).id)
+            invoke.resolve(JSObject().put("dismissed", true))
+        } catch (error: Exception) { invoke.reject(error.message ?: "Could not dismiss the shared link.") }
+    }
     override fun load(webView: WebView) {
         webView.settings.setSupportZoom(false)
         webView.settings.builtInZoomControls = false

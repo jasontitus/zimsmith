@@ -4,6 +4,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { resolve, join } from "node:path";
 import os from "node:os";
 import { syncIcons } from "./sync-icons.mjs";
+import { syncIOSSharing } from "./sync-ios-sharing.mjs";
 
 const [platform, command = "dev", ...args] = process.argv.slice(2);
 if (!["ios", "android"].includes(platform))
@@ -11,6 +12,8 @@ if (!["ios", "android"].includes(platform))
     "Usage: node scripts/mobile.mjs ios|android dev|build|check [args]",
   );
 if (["build", "dev"].includes(command)) syncIcons(platform);
+if (platform === "ios" && ["build", "dev"].includes(command))
+  syncIOSSharing(resolve("."));
 const env = { ...process.env, LZMA_API_STATIC: "1" };
 // Release binaries must not embed the developer's home directory in panic
 // locations or native-library __FILE__ strings.
@@ -96,4 +99,6 @@ if (command === "check") {
     { env, stdio: "inherit" },
   );
 }
+if (result.status === 0 && platform === "ios" && command === "init")
+  syncIOSSharing(resolve("."));
 process.exit(result.status || 0);

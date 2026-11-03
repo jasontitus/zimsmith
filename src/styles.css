@@ -2850,3 +2850,38 @@ td,
   width: 100%;
   min-width: 0;
 }
+.shared-links {
+  margin-bottom: 24px;
+  padding: 20px;
+}
+.shared-links h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 18px;
+}
+.shared-links p {
+  overflow-wrap: anywhere;
+  margin: 8px 0;
+}
+.shared-link {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-top: 12px;
+}
+.shared-link > div {
+  flex: 1;
+  min-width: 0;
+}
+.shared-link .button {
+  flex-shrink: 0;
+}
+@media (max-width: 600px) {
+  .shared-link {
+    flex-wrap: wrap;
+  }
+  .shared-link > div {
+    flex-basis: calc(100% - 50px);
+  }
+}

@@ -40,6 +40,7 @@ test("phone controls retain scale and finished archives use native save/open com
     };
     state.__TAURI_INTERNALS__ = {
       invoke: async (command, args) => {
+        if (command === "get_shared_links") return [];
         state.nativeCalls.push(command);
         if (command === "archive_templates")
           return [
@@ -219,6 +220,7 @@ test("completed native YouTube collection can repair its original audio", async 
     };
     w.__TAURI_INTERNALS__ = {
       invoke: async (command, args) => {
+        if (command === "get_shared_links") return [];
         if (command === "archive_templates")
           return [
             {

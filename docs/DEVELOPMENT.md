@@ -20,6 +20,8 @@ Development desktop builds automatically prefer `.tools/yt-dlp` and run it with 
 
 Install Xcode for iOS, or Android SDK, NDK 28+, and JDK 17/21 for Android. Install targets in the same rustup toolchain used for compilation:
 
+The iOS Share Extension also requires XcodeGen (`brew install xcodegen`) and matching App Group provisioning for the app and extension; see [sharing](SHARING.md).
+
 The fork's TLS dependency also builds native code: install CMake, Perl, and Clang/libclang (plus NASM on Windows). The mobile wrapper supplies the Android NDK variables needed by that build.
 
 ```sh

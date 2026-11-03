@@ -1,0 +1,5 @@
+Zimsmith 0.1.6 preview.
+Share a website or YouTube URL to Zimsmith from another Android app. The crawl form opens with the URL and source type filled in.
+Shared links stay in a private inbox until a crawl is successfully created or the link is dismissed. New shares do not overwrite a form you are already editing.
+iOS includes a Share Extension: save the link from the share sheet, then open Zimsmith to review and scan.
+A prominent Scan shared link button starts the crawl directly from the shared-link panel. Sharing alone does not start downloads.

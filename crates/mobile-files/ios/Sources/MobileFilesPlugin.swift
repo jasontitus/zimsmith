@@ -9,7 +9,21 @@ private struct FileArgs: Decodable {
     let filename: String?
 }
 
+private struct SharedLinkArgs: Decodable { let id: String }
+
 final class MobileFilesPlugin: Plugin, UIDocumentPickerDelegate, UIDocumentInteractionControllerDelegate {
+    @objc public func sharedLinks(_ invoke: Invoke) throws {
+        do { invoke.resolve(["items": try SharedURLInbox.appGroup().list()]) }
+        catch { invoke.reject(error.localizedDescription) }
+    }
+
+    @objc public func dismissSharedLink(_ invoke: Invoke) throws {
+        do {
+            let args = try invoke.parseArgs(SharedLinkArgs.self)
+            try SharedURLInbox.appGroup().dismiss(id: args.id)
+            invoke.resolve(["dismissed": true])
+        } catch { invoke.reject(error.localizedDescription) }
+    }
     private var pendingSave: Invoke?
     private var documentController: UIDocumentInteractionController?
 

@@ -1,6 +1,41 @@
+mod sharing;
 mod updates;
 use tauri::{Manager, State};
 use zim_engine::{templates, ArchiveTemplate, Engine, Job, NewJob, Settings};
+
+#[tauri::command]
+async fn get_shared_links(_app: tauri::AppHandle) -> Result<Vec<sharing::SharedLink>, String> {
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    return tauri::async_runtime::spawn_blocking(move || {
+        let value = _app
+            .state::<tauri_plugin_mobile_files::MobileFiles<tauri::Wry>>()
+            .shared_links()?;
+        let links: Vec<sharing::IncomingLink> =
+            serde_json::from_value(value["items"].clone()).map_err(|e| e.to_string())?;
+        Ok(links.into_iter().map(Into::into).collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    Ok(Vec::new())
+}
+
+#[tauri::command]
+async fn dismiss_shared_link(_app: tauri::AppHandle, id: String) -> Result<(), String> {
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    return tauri::async_runtime::spawn_blocking(move || {
+        _app.state::<tauri_plugin_mobile_files::MobileFiles<tauri::Wry>>()
+            .dismiss_shared_link(&id)
+            .map(|_| ())
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let _ = id;
+        Ok(())
+    }
+}
 
 #[tauri::command]
 fn archive_templates() -> Vec<templates::TemplateOption> {
@@ -374,6 +409,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            get_shared_links,
+            dismiss_shared_link,
             get_update_status,
             check_app_updates,
             configure_app_updates,

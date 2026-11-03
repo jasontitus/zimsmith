@@ -38,6 +38,7 @@ async function mockAndroid(
       };
       w.__TAURI_INTERNALS__ = {
         invoke: async (command, args) => {
+          if (command === "get_shared_links") return [];
           if (command.includes("update")) w.updateCalls.push({ command, args });
           if (command === "capabilities")
             return {

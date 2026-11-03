@@ -16,6 +16,8 @@ Turn websites and media collections into searchable offline [ZIM archives](https
 
 Enter a URL or hostname, scan, review when prompted, then **Download & build ZIM**. Keep the mobile app open while jobs run.
 
+You can also [share a link from your browser](docs/SHARING.md) to Zimsmith on Android and iOS.
+
 Change an existing archive’s style with **Details → Rebuild ZIM**. For older YouTube downloads with the wrong language, use **Details → Repair original audio**, then save/open the rebuilt archive.
 
 ## Platforms

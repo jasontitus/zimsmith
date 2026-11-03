@@ -20,12 +20,14 @@ jobs:
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - run: npm ci
+      - run: node --test scripts/sync-ios-sharing.test.mjs
       - run: npm run build
       - if: runner.os == 'Windows'
         name: Check portable MD5 backend with the requested asm feature
         run: cargo test --manifest-path vendor/md-5/Cargo.toml --features asm --locked
       - run: cargo test -p zim-engine -p zim-worker --locked
       - run: cargo check -p zim-studio --locked
+      - run: cargo test -p zim-studio sharing --lib --locked
   ios-engine:
     runs-on: macos-latest
     steps:
@@ -34,3 +36,8 @@ jobs:
         with:
           targets: aarch64-apple-ios
       - run: LZMA_API_STATIC=1 cargo check -p zim-engine --target aarch64-apple-ios --locked
+      - name: Check share extension and durable inbox
+        run: |
+          swiftc -application-extension -typecheck -target arm64-apple-ios15.0 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" crates/mobile-files/ios/Sources/SharedURLInbox.swift src-tauri/share-extension/ShareViewController.swift
+          swiftc crates/mobile-files/ios/Sources/SharedURLInbox.swift tests/swift-sharing/main.swift -o /tmp/shared-inbox-test
+          /tmp/shared-inbox-test
