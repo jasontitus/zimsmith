@@ -32,7 +32,5 @@
 	</array>
 	<key>CFBundleDisplayName</key>
 	<string>Zimsmith</string>
-	<key>CFBundleVersion</key>
-	<string>3</string>
 </dict>
 </plist>

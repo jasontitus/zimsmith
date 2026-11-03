@@ -1,0 +1,5 @@
+Zimsmith 0.1.5 preview.
+Fresh Android release alongside the matching iOS build, including the original YouTube audio selection and Repair original audio action introduced in 0.1.4.
+In Activity, open a YouTube collection’s Details and choose Repair original audio to rebuild it using the original soundtrack. Matching saved videos are reused; audio may download again. Save/open the repaired ZIM after completion; previously exported copies remain unchanged.
+Android updates public 0.1.2–0.1.4 installs in place using the same release signing key.
+No additional crawler behavior changes from 0.1.4.
