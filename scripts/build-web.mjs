@@ -51,7 +51,12 @@ writeFileSync(
   notices.join("\n\n----------------\n\n"),
 );
 if (extension) {
-  cpSync("extension/manifest.json", `${out}/manifest.json`);
+  const manifest = JSON.parse(readFileSync("extension/manifest.json", "utf8"));
+  manifest.version = JSON.parse(readFileSync("package.json", "utf8")).version;
+  writeFileSync(
+    `${out}/manifest.json`,
+    JSON.stringify(manifest, null, 2) + "\n",
+  );
   cpSync("extension/background.js", `${out}/background.js`);
   mkdirSync(`${out}/icons`, { recursive: true });
   for (const n of [32, 48, 128])

@@ -4,15 +4,15 @@
   "channel": "direct",
   "releases": [
     {
-      "version": "0.1.2",
-      "version_code": 1002,
+      "version": "0.1.3",
+      "version_code": 1003,
       "abi": "arm64-v8a",
       "min_sdk": 24,
-      "url": "https://github.com/jasontitus/zimsmith/releases/download/v0.1.2/Zimsmith-0.1.2-arm64-v8a-cb9f3d294a7f.apk",
-      "sha256": "cb9f3d294a7f4087e1e16ad9002858c39b7fc4756b496a229b559185cbb1bd78",
+      "url": "https://github.com/jasontitus/zimsmith/releases/download/v0.1.3/Zimsmith-0.1.3-arm64-v8a-1a4ad8ac19af.apk",
+      "sha256": "1a4ad8ac19af3a8a799b1e1a5f4f98cb8142f2c2a873260c2e3d88b6acb3305e",
       "certificate_sha256": "f05a21df94164c0695b4e422bb413e2b7e5971ef44ecab3e2666faacb287aa89",
-      "size_bytes": 37866125,
-      "notes": "First public Zimsmith preview.\nCrawl websites and supported media collections on your device, then build searchable offline ZIM archives.\nPause and resume jobs, edit failed crawls, choose archive templates, and rebuild from saved downloads.\nDirect Android builds include automatic/manual update checks and user-confirmed downloads through your browser.\nPublic Android releases use a dedicated release signing key. Earlier development-signed APKs cannot be updated in place with this key; save your archives before replacing a development installation.\nThis is an early preview: keep the app open while crawling on phones. Browser builds support HTML websites and direct media, with source CORS restrictions; YouTube extraction is native-only."
+      "size_bytes": 37870221,
+      "notes": "Zimsmith 0.1.3 preview.\nWindows source builds now use a portable MD5 backend and skip Unix-only memory-map advice.\nQueued crawl requests recheck server cooldowns extended while they wait. Sequential page and asset requests keep their configured or robots-declared spacing even when scheduling or disk bookkeeping runs late.\nRecognized static CDN assets remain free of artificial page delays, while robots rules and server backoff still apply.\nIncludes the GPL-3.0 license and the GitHub-hosted update feed.\nThis release uses the same signing key as public 0.1.2 APKs and can update them in place. Earlier private development-signed APKs use a different key; export archives before replacing those installations."
     }
   ]
 }

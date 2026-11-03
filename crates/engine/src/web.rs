@@ -5,13 +5,32 @@ use scraper::{Html, Selector};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashMap},
-    sync::OnceLock,
+    sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
 use tokio::sync::Mutex;
 use url::Url;
 
-static SLOTS: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+struct HostSlot {
+    gate: Mutex<()>,
+    next: Mutex<Instant>,
+}
+static SLOTS: OnceLock<Mutex<HashMap<String, Arc<HostSlot>>>> = OnceLock::new();
+
+async fn host_slot(url: &Url) -> Arc<HostSlot> {
+    SLOTS
+        .get_or_init(Default::default)
+        .lock()
+        .await
+        .entry(url.origin().ascii_serialization())
+        .or_insert_with(|| {
+            Arc::new(HostSlot {
+                gate: Mutex::new(()),
+                next: Mutex::new(Instant::now()),
+            })
+        })
+        .clone()
+}
 
 // Shared with the browser engine. Match exact hosts, never a CDN-looking
 // prefix, public-cloud suffix, or filename on an otherwise unknown site.
@@ -149,13 +168,16 @@ impl<'a> Network<'a> {
     ) -> Result<(StatusCode, reqwest::header::HeaderMap, Vec<u8>)> {
         wait_saved_cooldown(self.record).await?;
         for attempt in 0..=4u32 {
-            pace(url, delay).await;
             self.record
                 .change(|j| {
                     j.requests += 1;
                 })
                 .await?;
+            pace(url, delay).await;
             let response = self.client.get(url.clone()).send().await;
+            // Keep bookkeeping or a late scheduler wake from consuming the
+            // next gap. A zero-delay CDN still adds no artificial wait.
+            cooldown(url, delay).await;
             match response {
                 Ok(mut response) => {
                     let status = response.status();
@@ -357,24 +379,28 @@ impl<'a> Network<'a> {
 }
 
 pub async fn pace(url: &Url, delay: Duration) {
-    let wait = {
-        let mut slots = SLOTS.get_or_init(Default::default).lock().await;
-        let slot = slots
-            .entry(url.origin().ascii_serialization())
-            .or_insert_with(Instant::now);
-        let next = (*slot).max(Instant::now());
-        *slot = next + delay;
-        next
-    };
-    tokio::time::sleep_until(wait.into()).await;
+    let slot = host_slot(url).await;
+    // Serialize grants for this origin, while allowing other origins to run.
+    // Cooldowns use the separate deadline lock and can extend a sleeping wait.
+    let _gate = slot.gate.lock().await;
+    loop {
+        let wait = {
+            let mut next = slot.next.lock().await;
+            let now = Instant::now();
+            if *next <= now {
+                *next = now + delay;
+                return;
+            }
+            *next
+        };
+        tokio::time::sleep_until(wait.into()).await;
+    }
 }
 
 pub async fn cooldown(url: &Url, delay: Duration) {
-    let mut slots = SLOTS.get_or_init(Default::default).lock().await;
-    let slot = slots
-        .entry(url.origin().ascii_serialization())
-        .or_insert_with(Instant::now);
-    *slot = (*slot).max(Instant::now() + delay);
+    let slot = host_slot(url).await;
+    let mut next = slot.next.lock().await;
+    *next = (*next).max(Instant::now() + delay);
 }
 
 pub async fn wait_saved_cooldown(record: &Record) -> Result<()> {
@@ -852,6 +878,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn queued_requests_observe_a_cooldown_extended_while_waiting() {
+        let url = http_url("https://queued-cooldown.test/").unwrap();
+        pace(&url, Duration::from_millis(100)).await;
+        let queued_url = url.clone();
+        let queued = tokio::spawn(async move {
+            pace(&queued_url, Duration::ZERO).await;
+            Instant::now()
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let extended = Instant::now();
+        cooldown(&url, Duration::from_millis(200)).await;
+        let granted = tokio::time::timeout(Duration::from_secs(3), queued)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(granted.duration_since(extended) >= Duration::from_millis(200));
+    }
+
+    #[tokio::test]
     async fn cdn_assets_are_fast_but_pages_robots_and_429_still_control_pacing() {
         use axum::{
             extract::{Path, State},
@@ -960,7 +1005,8 @@ mod tests {
         // A page on that same recognized host still reserves the configured gap.
         let page = url("fonts.gstatic.com", "page");
         network.get(&page).await.unwrap();
-        let next = SLOTS.get().unwrap().lock().await[&page.origin().ascii_serialization()];
+        let slot = host_slot(&page).await;
+        let next = *slot.next.lock().await;
         assert!(next.saturating_duration_since(Instant::now()) > Duration::from_secs(25));
         network
             .get_asset(&url("fonts.googleapis.com", "one"))
