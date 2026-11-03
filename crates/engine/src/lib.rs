@@ -3,6 +3,7 @@ mod media;
 pub mod model;
 mod mux;
 mod native_media;
+mod robots_cache;
 pub mod templates;
 mod thumbnails;
 pub mod web;
@@ -84,6 +85,8 @@ impl Engine {
     pub async fn open(root: impl AsRef<Path>) -> Result<Self> {
         let root = root.as_ref().to_path_buf();
         tokio::fs::create_dir_all(&root).await?;
+        // Tombstoned jobs must never reappear after an interrupted deletion.
+        let _ = tokio::fs::remove_dir_all(root.join(".deleted")).await;
         let settings = match tokio::fs::read(root.join("settings.json")).await {
             Ok(data) => {
                 serde_json::from_slice::<Settings>(&data).context("Could not read app settings")?
@@ -187,6 +190,7 @@ impl Engine {
             entries: vec![],
             visited: vec![],
             resources: Default::default(),
+            asset_summary: None,
             logs: vec![],
             error: None,
             output: None,
@@ -408,6 +412,94 @@ impl Engine {
         self.launch(record)?;
         self.get(id).await
     }
+    /// Remove a stopped failed attempt and its internal files, never exported copies.
+    /// Returns false if disk cleanup must be retried on the next app launch.
+    pub async fn delete_failed(&self, id: &str) -> Result<bool> {
+        let mut records = self.jobs.write().await;
+        let record = records.get(id).cloned().context("Job not found")?;
+        let mut job = record.job.lock().await;
+        anyhow::ensure!(
+            job.status == "failed" && !record.running.load(Ordering::SeqCst),
+            "Only stopped failed attempts can be deleted"
+        );
+        let trash = self.root.join(".deleted");
+        tokio::fs::create_dir_all(&trash).await?;
+        let tombstone = trash.join(uuid::Uuid::new_v4().to_string());
+        tokio::fs::rename(&record.dir, &tombstone).await?;
+        job.status = "deleted".into();
+        records.remove(id);
+        drop(job);
+        drop(records);
+        Ok(tokio::fs::remove_dir_all(tombstone).await.is_ok())
+    }
+
+    /// Explicitly finish a website without any more network requests.
+    pub async fn build_available(&self, id: &str) -> Result<Job> {
+        let record = self.record(id).await?;
+        let mut current = record.job.lock().await;
+        anyhow::ensure!(
+            !record.running.load(Ordering::SeqCst)
+                && ["paused", "failed"].contains(&current.status.as_str())
+                && current.phase == "download"
+                && current.config.kind == SourceKind::Website,
+            "Pause a website download before building with available files"
+        );
+        let selected: Vec<_> = current.entries.iter().filter(|e| e.selected).collect();
+        anyhow::ensure!(
+            !selected.is_empty() && selected.iter().all(|e| e.state != "scan_failed"),
+            "All selected pages must have finished scanning"
+        );
+        for entry in selected {
+            anyhow::ensure!(
+                tokio::fs::metadata(record.dir.join("cache").join(format!("{}.html", entry.id)))
+                    .await
+                    .is_ok_and(|m| m.is_file()),
+                "Saved page is missing: {}. Resume the crawl first.",
+                entry.title
+            );
+        }
+        let mut next = current.clone();
+        for resource in next.resources.values_mut() {
+            if resource.state == "done"
+                && !tokio::fs::metadata(record.dir.join("cache").join(&resource.path))
+                    .await
+                    .is_ok_and(|m| m.is_file())
+            {
+                resource.state = "failed".into();
+            }
+            if resource.state != "done" {
+                resource.state = "skipped".into();
+            }
+        }
+        for entry in next.entries.iter_mut().filter(|e| e.selected) {
+            entry.state = "done".into();
+            entry.error = None;
+        }
+        if next.output.is_some() {
+            next.archive_revision = next
+                .archive_revision
+                .checked_add(1)
+                .context("Archive revision limit reached")?;
+        }
+        let history = record.dir.join("recovery-history");
+        tokio::fs::create_dir_all(&history).await?;
+        tokio::fs::copy(
+            record.dir.join("job.json"),
+            history.join(format!("{}.json", uuid::Uuid::new_v4())),
+        )
+        .await?;
+        next.phase = "package".into();
+        next.status = "packaging".into();
+        next.error = None;
+        next.retry_at = None;
+        next.log("warning", "Building with available files by request. Missing assets will be listed in the archive capture report. No further downloads.");
+        record.save(&next).await?;
+        *current = next;
+        drop(current);
+        self.launch(record)?;
+        self.get(id).await
+    }
+
     /// Re-resolve YouTube audio without rescanning or changing the approved selection.
     pub async fn repair_youtube_audio(&self, id: &str) -> Result<Job> {
         let record = self.record(id).await?;

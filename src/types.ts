@@ -54,6 +54,7 @@ export interface Job {
   retry_at: number | null;
   requests: number;
   bytes: number;
+  asset_summary?: { downloaded: number; missing: number; omitted: number };
   progress?: {
     label: string;
     completed: number;

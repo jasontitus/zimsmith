@@ -136,6 +136,23 @@ async fn rebuild_job(
 }
 
 #[tauri::command]
+async fn delete_failed_job(engine: State<'_, Engine>, id: String) -> Result<bool, String> {
+    engine
+        .delete_failed(&id)
+        .await
+        .map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+async fn build_available_job(engine: State<'_, Engine>, id: String) -> Result<Job, String> {
+    engine
+        .build_available(&id)
+        .await
+        .map(Job::view)
+        .map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
 async fn repair_youtube_audio(engine: State<'_, Engine>, id: String) -> Result<Job, String> {
     engine
         .repair_youtube_audio(&id)
@@ -430,6 +447,8 @@ pub fn run() {
             edit_job,
             rebuild_job,
             repair_youtube_audio,
+            build_available_job,
+            delete_failed_job,
             export_archive,
             open_archive
         ])

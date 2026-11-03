@@ -175,6 +175,13 @@ pub struct Progress {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AssetSummary {
+    pub downloaded: usize,
+    pub missing: usize,
+    pub omitted: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Job {
     pub id: String,
     pub config: NewJob,
@@ -196,6 +203,8 @@ pub struct Job {
     pub queue: Vec<PendingPage>,
     pub visited: Vec<String>,
     pub resources: BTreeMap<String, Resource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset_summary: Option<AssetSummary>,
     pub logs: Vec<Log>,
     pub error: Option<String>,
     pub output: Option<String>,
@@ -320,6 +329,23 @@ impl Job {
         })
     }
     pub fn view(mut self) -> Self {
+        self.asset_summary = Some(AssetSummary {
+            downloaded: self
+                .resources
+                .values()
+                .filter(|r| r.state == "done")
+                .count(),
+            missing: self
+                .resources
+                .values()
+                .filter(|r| r.state != "done" && r.state != "skipped")
+                .count(),
+            omitted: self
+                .resources
+                .values()
+                .filter(|r| r.state == "skipped")
+                .count(),
+        });
         self.queue.clear();
         self.visited.clear();
         self.resources.clear();

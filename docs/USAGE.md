@@ -51,3 +51,11 @@ YouTube audio selection prefers the provider's **original** track before bitrate
 For an existing YouTube collection with the wrong language, open its **Details → Repair original audio** in the native app. This keeps the approved selection, re-resolves audio without rescanning, reuses matching saved video files, and rebuilds the ZIM. Audio or a changed video format may need downloading again. Exported ZIM copies stay unchanged; save/open the repaired revision after it completes. The action is available for completed, failed, or paused jobs after scanning, and preserves server cooldowns and the previous archive until a replacement succeeds. **Rebuild ZIM** alone changes the template using cached files and cannot repair an already downloaded dub.
 
 The crawler captures server-rendered HTML. It does not execute a headless browser, capture authenticated/JavaScript-only applications, DRM, or live streams. Source scripts and event handlers are removed from website pages; an archive CSP blocks uncaptured subresource requests. External navigation links remain online links.
+
+### Recover or remove a failed website crawl
+
+Progress shows the actual request, including robots.txt checks. Each robots.txt request times out after 15 seconds; an unavailable policy is checkpointed for 60 seconds so Resume and other assets do not immediately repeat it. Successful policies are cached for an hour. Server cooldowns and robots exclusions still apply.
+
+For a paused or failed website download, **Build with available files** packages all selected cached pages and saved assets without more requests. Missing images, styles, or fonts are disclosed on the archive home page and in its capture report. Resume instead if you want to retry the missing downloads.
+
+Open a failed attempt in **Activity**, choose **Delete failed attempt**, then confirm. This removes its activity entry and internal downloads, including any internal ZIM. Copies you previously exported remain in Files or Downloads. Running and paused jobs cannot be deleted through this action.

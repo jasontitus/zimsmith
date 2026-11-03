@@ -91,3 +91,15 @@ export async function repairYouTubeAudio(id: string): Promise<Job> {
   if (!native) throw new Error("YouTube audio repair requires the native app.");
   return invoke<Job>("repair_youtube_audio", { id });
 }
+
+export async function buildAvailable(id: string): Promise<Job> {
+  if (!native)
+    throw new Error("Building available files requires the native app.");
+  return invoke<Job>("build_available_job", { id });
+}
+
+export async function deleteFailed(id: string): Promise<boolean> {
+  if (!native)
+    throw new Error("Deleting failed attempts requires the native app.");
+  return invoke<boolean>("delete_failed_job", { id });
+}

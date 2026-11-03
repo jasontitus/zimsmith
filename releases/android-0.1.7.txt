@@ -1,0 +1,3 @@
+Delete failed attempts from Activity with confirmation; exported ZIM copies are preserved.
+
+Website recovery can build all selected pages with available files and disclose missing assets inside the ZIM. Robots.txt checks now have a 15-second request timeout and saved retry checkpoints, so unavailable CDNs do not restart long retry loops on Resume. Progress identifies the actual request. Server cooldowns and robots exclusions remain enforced.

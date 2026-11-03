@@ -4,15 +4,15 @@
   "channel": "direct",
   "releases": [
     {
-      "version": "0.1.6",
-      "version_code": 1006,
+      "version": "0.1.7",
+      "version_code": 1007,
       "abi": "arm64-v8a",
       "min_sdk": 24,
-      "url": "https://github.com/jasontitus/zimsmith/releases/download/v0.1.6/Zimsmith-0.1.6-arm64-v8a-2aabb5c45d20.apk",
-      "sha256": "2aabb5c45d20eac950e98a2badc6575991e8398c83c761e899db66281131d621",
+      "url": "https://github.com/jasontitus/zimsmith/releases/download/v0.1.7/Zimsmith-0.1.7-arm64-v8a-71cb2774bd0b.apk",
+      "sha256": "71cb2774bd0baa297fbbd5b965ed1d95c4aa5f9ebd38004b792343a78f134f15",
       "certificate_sha256": "f05a21df94164c0695b4e422bb413e2b7e5971ef44ecab3e2666faacb287aa89",
-      "size_bytes": 38025869,
-      "notes": "Zimsmith 0.1.6 preview.\nShare a website or YouTube URL to Zimsmith from another Android app. The crawl form opens with the URL and source type filled in.\nShared links stay in a private inbox until a crawl is successfully created or the link is dismissed. New shares do not overwrite a form you are already editing.\niOS includes a Share Extension: save the link from the share sheet, then open Zimsmith to review and scan.\nA prominent Scan shared link button starts the crawl directly from the shared-link panel. Sharing alone does not start downloads."
+      "size_bytes": 38283917,
+      "notes": "Delete failed attempts from Activity with confirmation; exported ZIM copies are preserved.\n\nWebsite recovery can build all selected pages with available files and disclose missing assets inside the ZIM. Robots.txt checks now have a 15-second request timeout and saved retry checkpoints, so unavailable CDNs do not restart long retry loops on Resume. Progress identifies the actual request. Server cooldowns and robots exclusions remain enforced."
     }
   ]
 }

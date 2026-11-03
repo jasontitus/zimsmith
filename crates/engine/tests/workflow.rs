@@ -755,3 +755,144 @@ async fn editing_metadata_retries_packaging_offline_without_restarting_downloads
         .unwrap()
         .contains("A revised title"));
 }
+
+async fn saved_attempt(root: &std::path::Path, id: &str, status: &str) -> Job {
+    let dir = root.join(id);
+    tokio::fs::create_dir_all(dir.join("cache")).await.unwrap();
+    let mut job: Job = serde_json::from_value(serde_json::json!({
+        "id":id,"config":config("https://example.test/".into()),
+        "status":status,"phase":"download","created_at":1,"updated_at":1,
+        "entries":[{"id":"home","url":"https://example.test/","title":"Home","depth":0,"selected":true,"state":"pending","size":50,"duration":null,"error":null,"text":"Offline notes","assets":["https://cdn.example.test/style.css","https://cdn.example.test/font.woff2"],"media_file":null}],
+        "queue":[],"visited":[],"resources":{},"logs":[],"error":"Asset unavailable","output":null,"output_bytes":null,"retry_at":null,"requests":9,"bytes":50
+    })).unwrap();
+    for (name, state) in [("style.css", "done"), ("font.woff2", "failed")] {
+        let url = format!("https://cdn.example.test/{name}");
+        job.resources.insert(
+            url.clone(),
+            zim_engine::Resource {
+                url,
+                path: name.into(),
+                state: state.into(),
+                error: None,
+                mime: if name.ends_with("css") {
+                    "text/css"
+                } else {
+                    "font/woff2"
+                }
+                .into(),
+                dependencies: vec![],
+                size: 1,
+            },
+        );
+    }
+    tokio::fs::write(dir.join("cache/home.html"), "<!doctype html><title>Home</title><link rel='stylesheet' href='https://cdn.example.test/style.css'><p>Offline notes</p>").await.unwrap();
+    tokio::fs::write(dir.join("cache/style.css"), "body{color:navy}")
+        .await
+        .unwrap();
+    tokio::fs::write(dir.join("job.json"), serde_json::to_vec(&job).unwrap())
+        .await
+        .unwrap();
+    job
+}
+
+#[tokio::test]
+async fn failed_attempt_deletion_removes_only_its_internal_files_and_survives_restart() {
+    let temp = tempfile::tempdir().unwrap();
+    saved_attempt(temp.path(), "failed", "failed").await;
+    saved_attempt(temp.path(), "paused", "paused").await;
+    let export = temp.path().join("exported.zim");
+    tokio::fs::write(&export, "exported copy").await.unwrap();
+    let engine = Engine::open(temp.path()).await.unwrap();
+    assert!(engine.delete_failed("paused").await.is_err());
+    let failed = engine.record("failed").await.unwrap();
+    failed.running.store(true, Ordering::SeqCst);
+    assert!(engine.delete_failed("failed").await.is_err());
+    failed.running.store(false, Ordering::SeqCst);
+    assert!(engine.delete_failed("failed").await.unwrap());
+    assert!(engine.get("failed").await.is_err());
+    assert!(!temp.path().join("failed").exists());
+    assert_eq!(failed.job.lock().await.status, "deleted");
+    assert!(engine.resume("failed").await.is_err());
+    assert_eq!(
+        tokio::fs::read_to_string(export).await.unwrap(),
+        "exported copy"
+    );
+    let reopened = Engine::open(temp.path()).await.unwrap();
+    assert_eq!(reopened.list().await.len(), 1);
+    assert!(reopened.get("paused").await.is_ok());
+}
+
+#[tokio::test]
+async fn available_files_recovery_keeps_pages_and_saved_assets_with_visible_omission_report() {
+    let temp = tempfile::tempdir().unwrap();
+    let fixture = saved_attempt(temp.path(), "partial", "paused").await;
+    let engine = Engine::open(temp.path()).await.unwrap();
+    let summary = engine
+        .get("partial")
+        .await
+        .unwrap()
+        .view()
+        .asset_summary
+        .unwrap();
+    assert_eq!((summary.downloaded, summary.missing), (1, 1));
+    engine.build_available("partial").await.unwrap();
+    let done = wait(&engine, "partial", "completed").await;
+    assert_eq!(
+        done.requests, fixture.requests,
+        "recovery must not make network requests"
+    );
+    let archive = zimru::Archive::open(engine.artifact("partial").await.unwrap()).unwrap();
+    assert!(archive
+        .get_text("index.html")
+        .unwrap()
+        .contains("View capture report"));
+    let report = archive.get_text("capture-report.html").unwrap();
+    assert!(report.contains("1 assets were omitted"));
+    assert!(report.contains("cdn.example.test/font.woff2"));
+    assert!(archive
+        .get_text("home.html")
+        .unwrap()
+        .contains("Offline notes"));
+    assert!(archive
+        .get_text("style.css")
+        .unwrap()
+        .contains("color:navy"));
+    assert_eq!(
+        done.resources["https://cdn.example.test/font.woff2"].state,
+        "skipped"
+    );
+    assert!(temp.path().join("partial/recovery-history").is_dir());
+    assert!(engine.build_available("partial").await.is_err());
+}
+
+#[tokio::test]
+async fn available_files_recovery_rejects_missing_selected_page_before_changing_checkpoint() {
+    let temp = tempfile::tempdir().unwrap();
+    saved_attempt(temp.path(), "missing", "failed").await;
+    tokio::fs::remove_file(temp.path().join("missing/cache/home.html"))
+        .await
+        .unwrap();
+    tokio::fs::write(temp.path().join("missing/archive.zim"), "previous archive")
+        .await
+        .unwrap();
+    let engine = Engine::open(temp.path()).await.unwrap();
+    assert!(engine
+        .build_available("missing")
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("Saved page is missing"));
+    let job = engine.get("missing").await.unwrap();
+    assert_eq!(job.status, "failed");
+    assert_eq!(job.phase, "download");
+    assert_eq!(
+        job.resources["https://cdn.example.test/font.woff2"].state,
+        "failed"
+    );
+    assert_eq!(
+        tokio::fs::read_to_string(temp.path().join("missing/archive.zim"))
+            .await
+            .unwrap(),
+        "previous archive"
+    );
+}

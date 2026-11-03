@@ -139,6 +139,7 @@ pub struct Network<'a> {
     delay: Duration,
     cap: u64,
     robots: HashMap<String, Policy>,
+    robots_timeout: Duration,
 }
 
 impl<'a> Network<'a> {
@@ -154,6 +155,7 @@ impl<'a> Network<'a> {
             delay: Duration::from_millis(job.config.delay_ms),
             cap: job.config.max_resource_mb * 1024 * 1024,
             robots: HashMap::new(),
+            robots_timeout: Duration::from_secs(15),
         })
     }
     pub fn with_cap(mut self, bytes: u64) -> Self {
@@ -165,16 +167,32 @@ impl<'a> Network<'a> {
         url: &Url,
         delay: Duration,
         limit: u64,
+        robots: bool,
     ) -> Result<(StatusCode, reqwest::header::HeaderMap, Vec<u8>)> {
         wait_saved_cooldown(self.record).await?;
-        for attempt in 0..=4u32 {
+        let attempts = if robots { 1 } else { 5 };
+        for attempt in 0..attempts {
             self.record
                 .change(|j| {
                     j.requests += 1;
+                    j.progress.label = if robots {
+                        format!("Checking robots.txt: {url} (15s timeout)")
+                    } else {
+                        format!("Downloading {url} · attempt {} of {attempts}", attempt + 1)
+                    };
+                    j.progress.received = 0;
+                    j.progress.expected = None;
+                    j.progress.updated_at = now();
                 })
                 .await?;
             pace(url, delay).await;
-            let response = self.client.get(url.clone()).send().await;
+            let request = self.client.get(url.clone());
+            let request = if robots {
+                request.timeout(self.robots_timeout)
+            } else {
+                request
+            };
+            let response = request.send().await;
             // Keep bookkeeping or a late scheduler wake from consuming the
             // next gap. A zero-delay CDN still adds no artificial wait.
             cooldown(url, delay).await;
@@ -205,8 +223,8 @@ impl<'a> Network<'a> {
                             .await?;
                         // Keep the final rate-limit cooldown too: another job
                         // or a quick Resume must not immediately hit this host.
-                        if attempt == 4 {
-                            bail!("{} after 5 attempts: {}", status, url);
+                        if attempt + 1 == attempts {
+                            bail!("{} after {attempts} attempt(s): {}", status, url);
                         }
                         tokio::time::sleep(wait).await;
                         self.record.change(|j| j.retry_at = None).await?;
@@ -245,7 +263,7 @@ impl<'a> Network<'a> {
                         .await?;
                     return Ok((status, headers, body));
                 }
-                Err(error) if attempt == 4 => return Err(error.into()),
+                Err(error) if attempt + 1 == attempts => return Err(error.into()),
                 Err(_) => {
                     let wait = retry_delay(None, attempt);
                     self.record
@@ -265,12 +283,73 @@ impl<'a> Network<'a> {
         unreachable!()
     }
     async fn check_robots(&mut self, url: &Url, baseline: Duration) -> Result<Duration> {
+        use crate::robots_cache::{self, Checkpoint};
+        let origin = url.origin().ascii_serialization();
+        if self.robots.contains_key(&origin) {
+            return self.check_robots_uncached(url, baseline).await;
+        }
+        let cached = robots_cache::load(self.record, &origin).await;
+        if let Some(cached) = &cached {
+            if let Some(text) = &cached.text {
+                let delay = Duration::from_millis(cached.delay_ms);
+                cooldown(url, delay).await;
+                self.robots.insert(
+                    origin.clone(),
+                    Policy {
+                        text: text.clone(),
+                        delay,
+                    },
+                );
+                return self.check_robots_uncached(url, baseline).await;
+            }
+            if cached.error.is_some() || cached.attempts >= 2 {
+                bail!("Cannot safely read {origin}/robots.txt: {}. Retry in {}s, or pause and build with the available files.", cached.error.as_deref().unwrap_or("The previous policy checks were interrupted"), cached.valid_until.saturating_sub(now()));
+            }
+        }
+        // Persist before requesting: repeated pause/resume cannot reset an
+        // unreachable host's retry budget. One interrupted check can retry once.
+        let attempts = cached.as_ref().map_or(1, |c| c.attempts + 1);
+        robots_cache::save(
+            self.record,
+            &Checkpoint {
+                origin: origin.clone(),
+                valid_until: now() + 60,
+                text: None,
+                delay_ms: 0,
+                error: None,
+                attempts,
+            },
+        )
+        .await?;
+        let result = self.check_robots_uncached(url, baseline).await;
+        let policy = self.robots.get(&origin);
+        robots_cache::save(
+            self.record,
+            &Checkpoint {
+                origin,
+                valid_until: now() + if policy.is_some() { 3600 } else { 60 },
+                text: policy.map(|p| p.text.clone()),
+                delay_ms: policy.map_or(0, |p| p.delay.as_millis() as u64),
+                error: if policy.is_some() {
+                    None
+                } else {
+                    result.as_ref().err().map(|e| format!("{e:#}"))
+                },
+                attempts,
+            },
+        )
+        .await?;
+        result
+    }
+
+    async fn check_robots_uncached(&mut self, url: &Url, baseline: Duration) -> Result<Duration> {
         let origin = url.origin().ascii_serialization();
         if !self.robots.contains_key(&origin) {
             let mut robots_url = Url::parse(&format!("{origin}/robots.txt"))?;
             let mut result = None;
             for _ in 0..=5 {
-                let (status, headers, body) = self.raw(&robots_url, baseline, 1024 * 1024).await?;
+                let (status, headers, body) =
+                    self.raw(&robots_url, baseline, 1024 * 1024, true).await?;
                 if status.is_redirection() {
                     let location = headers
                         .get("location")
@@ -354,7 +433,7 @@ impl<'a> Network<'a> {
                 self.delay
             };
             let delay = self.check_robots(&url, baseline).await?;
-            let (status, headers, body) = self.raw(&url, delay, self.cap).await?;
+            let (status, headers, body) = self.raw(&url, delay, self.cap, false).await?;
             if status.is_redirection() {
                 url = resolve(
                     &url,
@@ -862,6 +941,92 @@ pub fn rewrite_css(css: &str, base: &Url, paths: &BTreeMap<String, String>) -> S
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn robots_failure_is_bounded_and_cached_across_networks_and_expiry_allows_retry() {
+        use axum::{response::IntoResponse, routing::get, Router};
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        let app = Router::new().route(
+            "/robots.txt",
+            get(move || {
+                let counter = counter.clone();
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    (StatusCode::from_u16(522).unwrap(), "unavailable").into_response()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = http_url(&format!(
+            "http://{}/font.woff2",
+            listener.local_addr().unwrap()
+        ))
+        .unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let job: Job = serde_json::from_value(serde_json::json!({
+            "id":"robots-failure", "config":{"url":"https://example.test/", "title":"Test", "kind":"website", "max_items":1, "max_depth":0, "delay_ms":1000, "max_resource_mb":1, "language":"eng", "description":"Test", "creator":"Test", "include_assets":true},
+            "status":"paused", "phase":"download", "created_at":1, "updated_at":1,
+            "entries":[], "queue":[], "visited":[], "resources":{}, "logs":[],
+            "error":null, "output":null, "output_bytes":null, "retry_at":null, "requests":0, "bytes":0
+        })).unwrap();
+        let record = Record {
+            job: Mutex::new(job),
+            stop: Default::default(),
+            running: Default::default(),
+            dir: temp.path().to_owned(),
+        };
+        for _ in 0..3 {
+            let mut network = Network::new(&record).await.unwrap();
+            assert!(network.check_robots(&url, Duration::ZERO).await.is_err());
+        }
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "resume must not reset the failed policy retry budget"
+        );
+        assert!(record
+            .job
+            .lock()
+            .await
+            .progress
+            .label
+            .contains("robots.txt"));
+        let origin = url.origin().ascii_serialization();
+        let mut cached = crate::robots_cache::load(&record, &origin).await.unwrap();
+        cached.valid_until = 0;
+        crate::robots_cache::save(&record, &cached).await.unwrap();
+        // Clear the saved cooldown only in this fixture to avoid a real backoff wait.
+        record.job.lock().await.retry_at = None;
+        let mut network = Network::new(&record).await.unwrap();
+        network
+            .check_robots(&url, Duration::ZERO)
+            .await
+            .unwrap_err();
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+        // A paused in-flight check may retry once, then must honor the checkpoint.
+        cached.valid_until = now() + 60;
+        cached.error = None;
+        cached.attempts = 2;
+        crate::robots_cache::save(&record, &cached).await.unwrap();
+        assert!(Network::new(&record)
+            .await
+            .unwrap()
+            .check_robots(&url, Duration::ZERO)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("interrupted"));
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+        server.abort();
+    }
+
     #[test]
     fn static_cdn_matching_is_exact() {
         for (url, expected) in [
@@ -1052,6 +1217,20 @@ mod tests {
         assert_eq!(times.len(), 2);
         assert!(times[1].duration_since(times[0]) >= Duration::from_secs(1));
         server.abort();
+        // Policies survive a fresh Network without fetching again, including
+        // exclusions and declared Crawl-delay. The server is now unavailable.
+        let mut resumed = Network::new(&record).await.unwrap();
+        let delay = resumed
+            .check_robots(&url("fonts.googleapis.com", "three"), Duration::ZERO)
+            .await
+            .unwrap();
+        assert_eq!(delay, Duration::from_millis(150));
+        assert!(resumed
+            .check_robots(&url("fonts.bunny.net", "blocked"), Duration::ZERO)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("Blocked by robots.txt"));
     }
     #[test]
     fn accepts_hostname_sources_without_repairing_unsafe_schemes_or_discovered_links() {

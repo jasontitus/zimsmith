@@ -32,10 +32,17 @@ import {
   ShieldCheck,
   Sparkles,
   Video,
+  Trash2,
   X,
 } from "lucide-react";
 import { AndroidUpdates } from "./AndroidUpdates";
-import { api, native, repairYouTubeAudio } from "./api";
+import {
+  api,
+  native,
+  repairYouTubeAudio,
+  buildAvailable,
+  deleteFailed,
+} from "./api";
 import { browserOnly, extensionMode } from "./browser/client";
 import brandIcon from "./assets/zimsmith-icon.png";
 import { ArchiveTemplates } from "./ArchiveTemplates";
@@ -120,11 +127,13 @@ export default function App() {
   const [selection, setSelection] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState("");
   const [confirm, setConfirm] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [templates, setTemplates] = useState<ArchiveTemplateOption[]>([]);
   const [rebuildTemplate, setRebuildTemplate] =
     useState<ArchiveTemplate | null>(null);
   const lastJob = useRef<string | null>(null);
+  const deletedJobs = useRef(new Set<string>());
   const lastStatus = useRef<string | null>(null);
   const currentForm = useRef({ config, editingJobId, busy, tab });
   currentForm.current = { config, editingJobId, busy, tab };
@@ -160,15 +169,16 @@ export default function App() {
   const refresh = useCallback(async () => {
     try {
       const list = await api.list();
-      setJobs(list);
+      setJobs(list.filter((item) => !deletedJobs.current.has(item.id)));
       setConnection("connected");
       if (!settings) {
         const saved = await api.settings();
         setSettings(saved);
         setSettingsDraft(saved);
       }
-      if (selectedJob) {
+      if (selectedJob && !deletedJobs.current.has(selectedJob)) {
         const detail = await api.get(selectedJob);
+        if (deletedJobs.current.has(selectedJob)) return;
         setJob(detail);
         if (lastJob.current !== detail.id) {
           setSelection(
@@ -185,6 +195,7 @@ export default function App() {
         lastStatus.current = detail.status;
       }
     } catch (error) {
+      if (selectedJob && deletedJobs.current.has(selectedJob)) return;
       setConnection("disconnected");
       if (browserOnly) setError(friendlyError(error));
     }
@@ -288,6 +299,30 @@ export default function App() {
       openJob(result);
     });
   const openArchive = (id: string) => void action(() => api.open(id));
+  const deleteAttempt = async () => {
+    if (!job) return;
+    setBusy(true);
+    setError("");
+    try {
+      const cleaned = await deleteFailed(job.id);
+      deletedJobs.current.add(job.id);
+      setJobs((items) => items.filter((item) => item.id !== job.id));
+      setSelectedJob(null);
+      setJob(null);
+      setTab("queue");
+      setConfirmDelete(false);
+      setToast(
+        cleaned
+          ? "Failed attempt and cached files deleted."
+          : "Failed attempt removed. Remaining cached files will be cleaned up on next launch.",
+      );
+    } catch (error) {
+      setError(friendlyError(error));
+      setConfirmDelete(false);
+    } finally {
+      setBusy(false);
+    }
+  };
   const saveSettings = (section: "downloads" | "appearance" = "downloads") =>
     action(async () => {
       if (!settings) return;
@@ -1138,6 +1173,66 @@ export default function App() {
                 </div>
               )}
               <JobProgress job={job} />
+              {native &&
+                job.config.kind === "website" &&
+                job.phase === "download" &&
+                ["paused", "failed"].includes(job.status) &&
+                job.entries.some((e) => e.selected) && (
+                  <section
+                    className="panel rebuild-panel"
+                    aria-labelledby="available-title"
+                  >
+                    <div>
+                      <h2 id="available-title">
+                        Finish with what’s downloaded
+                      </h2>
+                      <p>
+                        {job.asset_summary?.downloaded ?? 0} assets saved ·{" "}
+                        {job.asset_summary?.missing ?? 0} not downloaded. Build
+                        all selected pages without more requests. Missing
+                        images, styles, or fonts will be listed in the ZIM’s
+                        capture report.
+                      </p>
+                    </div>
+                    <button
+                      className="button secondary"
+                      disabled={busy}
+                      onClick={() =>
+                        void action(async () => {
+                          await buildAvailable(job.id);
+                          setToast(
+                            "Building with available files. Missing assets will be listed in the ZIM.",
+                          );
+                        })
+                      }
+                    >
+                      <Archive size={17} /> Build with available files
+                    </button>
+                  </section>
+                )}
+              {native && job.status === "failed" && (
+                <section
+                  className="panel rebuild-panel"
+                  aria-labelledby="delete-attempt-title"
+                >
+                  <div>
+                    <h2 id="delete-attempt-title">
+                      Remove this failed attempt
+                    </h2>
+                    <p>
+                      Delete its activity entry and internal cached files. ZIM
+                      copies you exported stay unchanged.
+                    </p>
+                  </div>
+                  <button
+                    className="button secondary"
+                    disabled={busy}
+                    onClick={() => setConfirmDelete(true)}
+                  >
+                    <Trash2 size={17} /> Delete failed attempt
+                  </button>
+                </section>
+              )}
               {job.retry_at && (
                 <div className="alert warning">
                   <Clock3 size={18} />
@@ -1698,6 +1793,45 @@ export default function App() {
         </main>
       </div>
 
+      {confirmDelete && job && (
+        <div
+          className="modal-backdrop"
+          onClick={() => {
+            if (!busy) setConfirmDelete(false);
+          }}
+        >
+          <section
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="delete-title">Delete failed attempt?</h2>
+            <p>
+              Remove “{job.config.title}” and all its internal downloads and
+              cached files from this device. Exported ZIM copies stay unchanged.
+              This cannot be undone.
+            </p>
+            <div className="modal-actions">
+              <button
+                className="button secondary"
+                disabled={busy}
+                onClick={() => setConfirmDelete(false)}
+              >
+                Keep attempt
+              </button>
+              <button
+                className="button primary"
+                disabled={busy}
+                onClick={() => void deleteAttempt()}
+              >
+                <Trash2 size={17} /> Delete attempt
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
       {confirm && job && (
         <div className="modal-backdrop" onClick={() => setConfirm(false)}>
           <section

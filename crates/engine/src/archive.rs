@@ -51,6 +51,24 @@ pub async fn package(record: &Record) -> Result<()> {
             }
         }
     }
+    let omitted: Vec<_> = needed
+        .iter()
+        .filter(|url| !job.resources.get(*url).is_some_and(|r| r.state == "done"))
+        .collect();
+    if !omitted.is_empty() {
+        let rows = omitted
+            .iter()
+            .map(|url| {
+                let label = http_url(url)
+                    .map(|u| format!("{}{}", u.origin().ascii_serialization(), u.path()))
+                    .unwrap_or_else(|_| "Unavailable asset".into());
+                format!("<li>{}</li>", escape(&label))
+            })
+            .collect::<String>();
+        let report = format!("<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><meta http-equiv='Content-Security-Policy' content=\"default-src 'none'; style-src 'self'; font-src 'self'; img-src 'self'\"><title>Capture report</title><link rel='stylesheet' href='studio.css'></head><body class='zim-archive'><main class='archive-media'><a href='index.html'>Back to collection</a><h1>Capture report</h1><p>Built with available files at your request. {} assets were omitted. Some images, styles, or fonts may be missing. All selected pages are included.</p><ul>{rows}</ul></main></body></html>", omitted.len());
+        tokio::fs::write(content.join("capture-report.html"), report).await?;
+    }
+    let omitted_count = omitted.len();
     for url in needed {
         let Some(resource) = job.resources.get(&url).filter(|r| r.state == "done") else {
             continue;
@@ -76,6 +94,7 @@ pub async fn package(record: &Record) -> Result<()> {
         }
     }
     let mut catalog = templates::SearchCatalog::default();
+    catalog.omitted_assets = omitted_count;
     for (index, entry) in selected.iter().enumerate() {
         record
             .progress(
