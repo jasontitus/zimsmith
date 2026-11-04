@@ -205,6 +205,7 @@ impl Engine {
                 .then_some(settings.auto_start_item_limit),
             scan_truncated: false,
             archive_template: settings.archive_template,
+            zstd_level: settings.zstd_level,
             archive_revision: 0,
             created_at: now(),
             updated_at: now(),
@@ -593,6 +594,7 @@ impl Engine {
 
     /// Repackage only: never send completed content through scan/download again.
     pub async fn rebuild(&self, id: &str, template: ArchiveTemplate) -> Result<Job> {
+        let zstd_level = self.settings().await.zstd_level;
         let record = self.record(id).await?;
         anyhow::ensure!(
             !record.running.load(Ordering::SeqCst),
@@ -636,6 +638,7 @@ impl Engine {
                 }
             }
             job.archive_template = template;
+            job.zstd_level = zstd_level;
             job.archive_revision = job
                 .archive_revision
                 .checked_add(1)

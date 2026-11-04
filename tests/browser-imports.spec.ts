@@ -67,6 +67,17 @@ with zipfile.ZipFile(sys.argv[1],'w',compression=zipfile.ZIP_DEFLATED) as z:
       join(temp, "saved.zip"),
     ]);
     await page.goto(origin + "/");
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await expect(
+      page.getByLabel("Zstandard compression level", { exact: true }),
+    ).toHaveCount(0);
+    await expect(page.locator(".compression-preferences")).toContainText(
+      "This browser build writes uncompressed ZIMs",
+    );
+    await page
+      .getByRole("button", { name: "Create an archive", exact: true })
+      .first()
+      .click();
     const panel = page.locator(".import-panel");
     await panel.locator("summary").click();
     await panel

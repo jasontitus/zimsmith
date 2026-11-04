@@ -88,6 +88,7 @@ const defaultSettings: Settings = {
   auto_start_small_jobs: true,
   auto_start_item_limit: 100,
   archive_template: "atlas",
+  zstd_level: 3,
 };
 const labels: Record<string, string> = {
   importing: "Importing saved files",
@@ -184,7 +185,7 @@ export default function App() {
       setJobs(list.filter((item) => !deletedJobs.current.has(item.id)));
       setConnection("connected");
       if (!settings) {
-        const saved = await api.settings();
+        const saved = { ...defaultSettings, ...(await api.settings()) };
         setSettings(saved);
         setSettingsDraft(saved);
       }
@@ -342,28 +343,29 @@ export default function App() {
       setBusy(false);
     }
   };
-  const saveSettings = (section: "downloads" | "appearance" = "downloads") =>
+  const saveSettings = (
+    section: "downloads" | "appearance" | "compression" = "downloads",
+  ) =>
     action(async () => {
       if (!settings) return;
-      const next =
+      const changes =
         section === "appearance"
-          ? { ...settings, archive_template: settingsDraft.archive_template }
-          : {
-              ...settings,
-              auto_start_small_jobs: settingsDraft.auto_start_small_jobs,
-              auto_start_item_limit: settingsDraft.auto_start_item_limit,
-            };
-      const saved = await api.updateSettings(next);
+          ? { archive_template: settingsDraft.archive_template }
+          : section === "compression"
+            ? { zstd_level: settingsDraft.zstd_level }
+            : {
+                auto_start_small_jobs: settingsDraft.auto_start_small_jobs,
+                auto_start_item_limit: settingsDraft.auto_start_item_limit,
+              };
+      const saved = await api.updateSettings({ ...settings, ...changes });
       setSettings(saved);
-      setSettingsDraft((previous) =>
-        section === "appearance"
-          ? { ...previous, archive_template: saved.archive_template }
-          : { ...saved, archive_template: previous.archive_template },
-      );
+      setSettingsDraft((previous) => ({ ...previous, ...changes }));
       setToast(
         section === "appearance"
           ? "Archive style saved. Applies to new jobs."
-          : "Download preferences saved. Applies to new jobs.",
+          : section === "compression"
+            ? "Compression preference saved. Applies to new jobs and rebuilds."
+            : "Download preferences saved. Applies to new jobs.",
       );
     });
   const visibleJobs = jobs.filter((j) =>
@@ -1389,6 +1391,12 @@ export default function App() {
                         ? "Reuse the downloaded files and update the archive's appearance. Copies you already saved stay unchanged."
                         : "Reuse the downloaded files. Screening Room may download missing thumbnails. Copies you already saved stay unchanged."}
                     </p>
+                    {!browserOnly && (
+                      <p>
+                        Rebuild uses Zstandard level {settings?.zstd_level ?? 3}
+                        . Change it under Settings → Archive compression.
+                      </p>
+                    )}
                   </div>
                   <div className="rebuild-controls">
                     <label htmlFor="rebuild-template">Archive template</label>
@@ -1752,6 +1760,66 @@ export default function App() {
                     </button>
                   </div>
                 </form>
+              </section>
+              <section className="card settings-card compression-preferences">
+                <h2>Archive compression</h2>
+                {browserOnly ? (
+                  <p>
+                    This browser build writes uncompressed ZIMs. Zstandard
+                    compression is available in the installed apps.
+                  </p>
+                ) : (
+                  <form
+                    className="preferences-form"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void saveSettings("compression");
+                    }}
+                  >
+                    <div className="setting-row">
+                      <div>
+                        <label htmlFor="zstd-level">
+                          Zstandard compression level
+                        </label>
+                        <p>
+                          1 is fastest; 22 prioritizes smaller files. Higher
+                          levels use more time and memory. The default is 3.
+                        </p>
+                      </div>
+                      <input
+                        id="zstd-level"
+                        className="threshold-input"
+                        type="number"
+                        min={1}
+                        max={22}
+                        step={1}
+                        required
+                        disabled={!settings || busy}
+                        value={settingsDraft.zstd_level}
+                        onChange={(event) =>
+                          setSettingsDraft((previous) => ({
+                            ...previous,
+                            zstd_level: +event.target.value,
+                          }))
+                        }
+                      />
+                    </div>
+                    <p className="settings-note">
+                      Applies to new jobs and explicit rebuilds. Existing jobs
+                      keep their saved level when resumed. Video, audio, and
+                      images keep their existing compression.
+                    </p>
+                    <div className="preferences-actions">
+                      <button
+                        type="submit"
+                        className="button primary"
+                        disabled={!settings || busy}
+                      >
+                        <Check size={16} /> Save compression preference
+                      </button>
+                    </div>
+                  </form>
+                )}
               </section>
               <section className="card settings-card download-preferences">
                 <h2>Download confirmation</h2>

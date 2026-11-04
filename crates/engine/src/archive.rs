@@ -20,6 +20,10 @@ pub fn escape(text: &str) -> String {
 pub async fn package(record: &Record) -> Result<()> {
     crate::thumbnails::prepare(record).await?;
     let job = record.job.lock().await.clone();
+    anyhow::ensure!(
+        (1..=22).contains(&job.zstd_level),
+        "Zstandard compression level must be 1–22"
+    );
     record
         .progress("Preparing archive content", 0, None, "files")
         .await;
@@ -183,14 +187,14 @@ pub async fn package(record: &Record) -> Result<()> {
     tokio::fs::write(content.join("archive-display.woff2"), templates::DISPLAY).await?;
     tokio::fs::write(content.join("font-licenses.txt"), templates::FONT_LICENSE).await?;
     write_icon(&content.join("favicon.png"))?;
-    record.log("info", "Offline pages, table of contents, and portable inverted search index ready. Writing ZIM locally with zimru.").await?;
+    record.log("info", format!("Offline pages, table of contents, and portable inverted search index ready. Writing ZIM locally with zimru, Zstandard level {}.", job.zstd_level)).await?;
     let partial = record.dir.join("archive.partial.zim");
     if partial.exists() {
         tokio::fs::remove_file(&partial).await?;
     }
     let mut creator = zimru::writer::Creator::new();
     creator
-        .set_compression_level(3)
+        .set_compression_level(job.zstd_level)
         .set_cluster_size_target(1024 * 1024)
         .set_max_in_flight_bytes(8 * 1024 * 1024)
         .set_streaming_encode_threshold(256 * 1024);

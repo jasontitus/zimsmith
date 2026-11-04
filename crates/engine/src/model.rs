@@ -28,6 +28,11 @@ pub struct Settings {
     pub auto_start_small_jobs: bool,
     pub auto_start_item_limit: usize,
     pub archive_template: ArchiveTemplate,
+    pub zstd_level: i32,
+}
+
+pub fn default_zstd_level() -> i32 {
+    3
 }
 
 impl Default for Settings {
@@ -36,12 +41,17 @@ impl Default for Settings {
             auto_start_small_jobs: true,
             auto_start_item_limit: 100,
             archive_template: ArchiveTemplate::Atlas,
+            zstd_level: default_zstd_level(),
         }
     }
 }
 
 impl Settings {
     pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            (1..=22).contains(&self.zstd_level),
+            "Zstandard compression level must be 1–22"
+        );
         anyhow::ensure!(
             (1..=5000).contains(&self.auto_start_item_limit),
             "Automatic download threshold must be 1–5000 items"
@@ -216,6 +226,9 @@ pub struct Job {
     pub scan_truncated: bool,
     #[serde(default)]
     pub archive_template: ArchiveTemplate,
+    /// Snapshot for new jobs; explicit rebuilds use the current preference.
+    #[serde(default = "default_zstd_level")]
+    pub zstd_level: i32,
     /// Incremented for each rebuild so exported revisions have distinct names.
     #[serde(default)]
     pub archive_revision: u64,
@@ -439,8 +452,33 @@ pub struct Capabilities {
 }
 
 #[cfg(test)]
-mod audio_repair_tests {
+mod tests {
     use super::*;
+    #[test]
+    fn legacy_preferences_and_job_manifests_keep_level_three() {
+        let settings: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(settings.zstd_level, 3);
+        assert_eq!(completed().zstd_level, 3);
+    }
+    #[test]
+    fn compression_preferences_accept_supported_levels_and_reject_invalid_values() {
+        for zstd_level in [1, 3, 9, 22] {
+            assert!(Settings {
+                zstd_level,
+                ..Default::default()
+            }
+            .validate()
+            .is_ok());
+        }
+        for zstd_level in [-1, 0, 23] {
+            assert!(Settings {
+                zstd_level,
+                ..Default::default()
+            }
+            .validate()
+            .is_err());
+        }
+    }
     fn completed() -> Job {
         serde_json::from_value(serde_json::json!({
             "id":"repair-fixture", "config":{"url":"https://www.youtube.com/playlist?list=fixture","title":"Fixture","kind":"media","max_items":10,"max_depth":0,"delay_ms":1000,"max_resource_mb":50,"language":"eng","description":"Fixture","creator":"Fixture","include_assets":false},

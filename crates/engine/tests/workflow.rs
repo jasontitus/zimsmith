@@ -1217,6 +1217,82 @@ async fn upload(engine: &Engine, config: NewJob, name: &str, bytes: &[u8]) -> Jo
     }
     job
 }
+
+#[tokio::test]
+async fn persists_compression_per_job_and_recompresses_saved_content_at_the_current_level() {
+    let temp = tempfile::tempdir().unwrap();
+    let engine = Engine::open(temp.path()).await.unwrap();
+    engine
+        .update_settings(Settings {
+            zstd_level: 1,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let html = format!(
+        "<title>Compression fixture</title><p>{}</p>",
+        (0..2000)
+            .map(|i| format!("Garden {} has {} plants. ", i % 137, i % 31))
+            .collect::<String>()
+    );
+    let job = upload(
+        &engine,
+        config("https://local-import.invalid/".into()),
+        "index.html",
+        html.as_bytes(),
+    )
+    .await;
+    let review = engine.finish_import(&job.id).await.unwrap();
+    assert_eq!(review.zstd_level, 1);
+    engine
+        .update_settings(Settings {
+            zstd_level: 9,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    engine
+        .build(
+            &job.id,
+            review.entries.iter().map(|e| e.id.clone()).collect(),
+        )
+        .await
+        .unwrap();
+    let original = wait(&engine, &job.id, "completed").await;
+    assert_eq!(
+        original.zstd_level, 1,
+        "Changing preferences must not change an existing job"
+    );
+    let path = temp.path().join(&job.id).join("archive.zim");
+    let index = zimru::Archive::open(&path)
+        .unwrap()
+        .get_text("index.html")
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let reopened = Engine::open(temp.path()).await.unwrap();
+    assert_eq!(reopened.settings().await.zstd_level, 9);
+    assert_eq!(reopened.get(&job.id).await.unwrap().zstd_level, 1);
+    reopened
+        .rebuild(&job.id, ArchiveTemplate::Atlas)
+        .await
+        .unwrap();
+    let rebuilt = wait(&reopened, &job.id, "completed").await;
+    assert_eq!(rebuilt.zstd_level, 9);
+    assert_eq!(rebuilt.requests, 0, "Recompression must remain offline");
+    assert_eq!(
+        zimru::Archive::open(&path)
+            .unwrap()
+            .get_text("index.html")
+            .unwrap(),
+        index
+    );
+    assert!(
+        rebuilt.output_bytes.unwrap() < original.output_bytes.unwrap(),
+        "Higher compression must produce a smaller fixture ZIM with identical content"
+    );
+    assert!(rebuilt.validation.unwrap().checksum_verified);
+}
+
 #[tokio::test]
 async fn imports_saved_zip_with_assets_offline_and_can_rebuild_without_uploaded_staging() {
     let html=b"<title>Imported garden</title><link rel='stylesheet' href='assets/style.css'><p>Locally saved botany.</p><img src='missing.png'>";

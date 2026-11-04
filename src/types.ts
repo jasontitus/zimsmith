@@ -10,6 +10,7 @@ export interface Settings {
   auto_start_small_jobs: boolean;
   auto_start_item_limit: number;
   archive_template: ArchiveTemplate;
+  zstd_level: number;
 }
 export interface CaptureOptions {
   include_urls: string[];
@@ -78,6 +79,7 @@ export interface Job {
   auto_start_item_limit: number | null;
   scan_truncated: boolean;
   archive_template: ArchiveTemplate;
+  zstd_level?: number;
   archive_revision?: number;
   created_at: number;
   updated_at: number;

@@ -66,6 +66,10 @@ In a completed collection’s **Details**, choose **Check for changes**. Review 
 
 Under **Crawl & archive settings**, configure include/exclude URL globs, source asset types, a total download budget, and video quality. `*` matches any text; `?` matches one character. Rules beginning with `/` match paths, others match full URLs. Includes apply to pages; excludes apply to pages and assets. The starting page can be scanned for discovery even if not included. Budget counters survive Resume and restart for a refresh. Allow extra disk space for cached files and the output ZIM. Quality presets cap YouTube/yt-dlp resolution at 360p, 720p, or 1080p; direct files keep their original quality.
 
+### Archive compression
+
+In installed apps, **Settings → Archive compression** sets the Zstandard level from 1–22 (default 3). Higher levels trade build time and memory for smaller files. New jobs save this preference; resuming keeps that saved level. **Rebuild ZIM** uses the current preference and can recompress downloaded content without downloading it again. Audio, video, and images keep their existing compression. Browser and extension builds still write uncompressed ZIMs.
+
 ### Subtitles and saved-content imports
 
 Native YouTube jobs save available captions in the original audio language by default. Choose a subtitle language (for example `en` or `pt-BR`) and whether to allow auto captions. Audio selection stays original. Captions appear in the player, detail-page transcript search, and timestamp links from collection search. Unavailable captions are reported while retaining the video. Portable collection search has a memory budget; its report discloses limits, and full per-video transcripts remain searchable on their detail pages.

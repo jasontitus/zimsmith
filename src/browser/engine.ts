@@ -177,17 +177,20 @@ export class BrowserEngine {
       case "preview_archive_template":
         return preview(args.template as ArchiveTemplate);
       case "get_settings":
-        return (
-          (await this.store.get<Settings>("preferences", "settings")) ||
-          defaults
-        );
+        return {
+          ...defaults,
+          ...(await this.store.get<Settings>("preferences", "settings")),
+        };
       case "update_settings": {
-        const settings = args.settings as Settings;
+        const settings = { ...defaults, ...(args.settings as Settings) };
         if (
           typeof settings.auto_start_small_jobs !== "boolean" ||
           !Number.isInteger(settings.auto_start_item_limit) ||
           settings.auto_start_item_limit < 1 ||
           settings.auto_start_item_limit > 5000 ||
+          !Number.isInteger(settings.zstd_level) ||
+          settings.zstd_level < 1 ||
+          settings.zstd_level > 22 ||
           !templates.some((t) => t.id === settings.archive_template)
         )
           throw new Error("Invalid archive preferences.");

@@ -4,15 +4,15 @@
   "channel": "direct",
   "releases": [
     {
-      "version": "0.2.0",
-      "version_code": 2000,
+      "version": "0.2.1",
+      "version_code": 2001,
       "abi": "arm64-v8a",
       "min_sdk": 24,
-      "url": "https://github.com/jasontitus/zimsmith/releases/download/v0.2.0/Zimsmith-0.2.0-arm64-v8a-f58e56677be7.apk",
-      "sha256": "f58e56677be784ce53029410e649d34622f0eb1b12cd96ab88d9d3fbfa3408f0",
+      "url": "https://github.com/jasontitus/zimsmith/releases/download/v0.2.1/Zimsmith-0.2.1-arm64-v8a-40985a32c482.apk",
+      "sha256": "40985a32c482b66644c79cc90deffa1c4fcc050971df42ed55b4d97aa8c2e93f",
       "certificate_sha256": "f05a21df94164c0695b4e422bb413e2b7e5971ef44ecab3e2666faacb287aa89",
-      "size_bytes": 39836301,
-      "notes": "Refresh existing collections with change review, saved YouTube track reuse, and conditional asset revalidation.\n\nControl URL scope, source asset types, total download budgets, and video quality (360p/720p/1080p). Original audio remains the default.\n\nSave available YouTube subtitles, search transcripts, and open playback timestamps. Full transcripts stay in per-video files; portable collection search has a disclosed memory budget.\n\nImport saved HTML, media, folders, ZIPs, and website URL lists. Local imports do not fetch missing resources; chunked uploads can resume after reselecting files.\n\nEvery new ZIM includes a capture report. Checksum and directory validation run before a replacement archive is marked ready. Failed attempts can be deleted, including cached files."
+      "size_bytes": 39799437,
+      "notes": "Configure Zstandard compression under Settings → Archive compression: levels 1–22, default 3. New jobs save the chosen level; resuming keeps it. Rebuild ZIM uses the current setting to recompress saved content offline. Browser and extension ZIMs remain uncompressed."
     }
   ]
 }

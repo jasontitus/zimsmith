@@ -1,0 +1,1 @@
+Configure Zstandard compression under Settings → Archive compression: levels 1–22, default 3. New jobs save the chosen level; resuming keeps it. Rebuild ZIM uses the current setting to recompress saved content offline. Browser and extension ZIMs remain uncompressed.

@@ -9,6 +9,9 @@ export function CaptureReport({ job }: { job: Job }) {
       aria-labelledby="capture-summary-title"
     >
       <h2 id="capture-summary-title">Capture & validation report</h2>
+      {job.zstd_level !== undefined && (
+        <p>Archive compression: Zstandard level {job.zstd_level}.</p>
+      )}
       <dl>
         {[
           ["Captured items", report.captured_items],
