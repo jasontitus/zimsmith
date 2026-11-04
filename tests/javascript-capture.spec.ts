@@ -51,7 +51,7 @@ test("real React hydration and accessible list pagination work without site-spec
           snapshot = await page.evaluate(() =>
             (window as any).__zimsmithCapture.poll(),
           );
-          return !!snapshot;
+          return typeof snapshot?.html === "string";
         },
         { timeout: 20000, intervals: [300] },
       )
@@ -90,7 +90,7 @@ test("button-paginated catalogs retain every product card and remove dead contro
           snapshot = await page.evaluate(() =>
             (window as any).__zimsmithCapture.poll(),
           );
-          return !!snapshot;
+          return typeof snapshot?.html === "string";
         },
         { timeout: 20000, intervals: [300] },
       )
@@ -138,7 +138,7 @@ test("browser capture waits for API content, load-more, and runtime CSS", async 
           snapshot = await page.evaluate(() =>
             (window as any).__zimsmithCapture.poll(),
           );
-          return !!snapshot;
+          return typeof snapshot?.html === "string";
         },
         { timeout: 20000, intervals: [300] },
       )
@@ -182,13 +182,99 @@ test("browser capture surfaces API 429s and their Retry-After", async ({
           snapshot = await page.evaluate(() =>
             (window as any).__zimsmithCapture.poll(),
           );
-          return !!snapshot;
+          return typeof snapshot?.html === "string";
         },
         { timeout: 10000 },
       )
       .toBe(true);
     expect(snapshot.rate_limit.status).toBe(429);
     expect(snapshot.rate_limit.retry_after).toBe("7");
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("pagination ignores unrelated animation mutations and reports live retained-item counts", async ({
+  page,
+}) => {
+  const server = createServer((req, res) => {
+    res.setHeader("Content-Type", "text/html");
+    res.end(`<title>Animated collection</title><main><div class="block-product-list" id="catalog"><div class="product-list"><p class="product-list__total-count">60 products</p><div class="product-list__content"></div><div class="product-list-pagination"><button data-qa="button-next">Next</button></div></div></div></main><script>
+let n=0;function draw(){document.querySelector('.product-list').innerHTML='<p class="product-list__total-count">60 products</p><div class="product-list__content">'+Array.from({length:6},(_,i)=>'<a class="product-list__link" href="/product/'+(n*6+i)+'">Product '+(n*6+i)+'</a>').join('')+'</div><div class="product-list-pagination"><button data-qa="button-next" '+(n===9?'disabled':'')+'>Next</button></div>';document.querySelector('button').onclick=()=>{n++;document.querySelector('.product-list').innerHTML='<div class="skeleton-loader">Loading</div>';setTimeout(draw,150)}}draw();setInterval(()=>document.body.setAttribute('data-pulse',Date.now()),100);
+</script>`);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("No port");
+  try {
+    await page.addInitScript({
+      content: `window.__zimsmithRenderOptions={timeout_secs:20};\n${script}`,
+    });
+    await page.goto(`http://127.0.0.1:${address.port}/`);
+    let result: any;
+    const counts = new Set<number>();
+    await expect
+      .poll(
+        async () => {
+          result = await page.evaluate(() =>
+            (window as any).__zimsmithCapture.poll(),
+          );
+          if (result?.progress) counts.add(result.progress.captured_items);
+          return typeof result?.html === "string";
+        },
+        { timeout: 25000, intervals: [300] },
+      )
+      .toBe(true);
+    expect(result.settled).toBe(true);
+    expect(result.html).toContain("60 products captured");
+    for (let i = 0; i < 60; i++)
+      expect(result.html).toContain(
+        `href="http://127.0.0.1:${address.port}/product/${i}"`,
+      );
+    expect(counts.size).toBeGreaterThan(2);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("a deadline during a loading skeleton preserves earlier cards and warns about missing pages", async ({
+  page,
+}) => {
+  const server = createServer((req, res) => {
+    if (req.url === "/never") return;
+    res.setHeader("Content-Type", "text/html");
+    res.end(
+      `<title>Slow collection</title><div class="block-product-list" id="catalog"><div class="product-list"><p class="product-list__total-count">12 products</p><div class="product-list__content"><a class="product-list__link" href="/one">Saved item one</a><a class="product-list__link" href="/two">Saved item two</a></div><div class="product-list-pagination"><button data-qa="button-next">Next</button></div></div></div><script>document.querySelector('button').onclick=()=>{document.querySelector('.product-list').outerHTML='<div class="skeleton-loader">Loading next page</div>';fetch('/never').then(()=>{})}</script>`,
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("No port");
+  try {
+    await page.addInitScript({
+      content: `window.__zimsmithRenderOptions={timeout_secs:10};\n${script}`,
+    });
+    await page.goto(`http://127.0.0.1:${address.port}/`);
+    let result: any;
+    await expect
+      .poll(
+        async () => {
+          result = await page.evaluate(() =>
+            (window as any).__zimsmithCapture.poll(),
+          );
+          return typeof result?.html === "string";
+        },
+        { timeout: 15000, intervals: [300] },
+      )
+      .toBe(true);
+    expect(result.settled).toBe(false);
+    expect(result.html).toContain("Saved item one");
+    expect(result.html).toContain("Saved item two");
+    expect(result.html).toContain("2 products captured");
+    expect(result.warnings.join(" ")).toContain("2 of 12");
+    expect(result.html).not.toContain("<script");
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));

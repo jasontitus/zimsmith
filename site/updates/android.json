@@ -4,15 +4,15 @@
   "channel": "direct",
   "releases": [
     {
-      "version": "0.2.4",
-      "version_code": 2004,
+      "version": "0.2.5",
+      "version_code": 2005,
       "abi": "arm64-v8a",
       "min_sdk": 24,
-      "url": "https://github.com/jasontitus/zimsmith/releases/download/v0.2.4/Zimsmith-0.2.4-arm64-v8a-0a4efe85536f.apk",
-      "sha256": "0a4efe85536f5586d89629963acb3257caca1780e675e0889fe7baafcd2f2129",
+      "url": "https://github.com/jasontitus/zimsmith/releases/download/v0.2.5/Zimsmith-0.2.5-arm64-v8a-e6a8fa81f89c.apk",
+      "sha256": "e6a8fa81f89c3c2cb6fae7ad798a06d366e16a659835437a59a62fd5fb22292c",
       "certificate_sha256": "f05a21df94164c0695b4e422bb413e2b7e5971ef44ecab3e2666faacb287aa89",
-      "size_bytes": 40503949,
-      "notes": "Add optional on-device JavaScript rendering for website crawls. Capture hydrated and API-loaded content, lazy images, recognized Load more controls, accessible list pagination, and Hostinger product catalogs. The same renderer works across sites and frameworks.\n\nReview rendered pages before downloading, see incomplete-capture warnings and progress, pause/resume, and rescan an existing collection with JavaScript while preserving its current ZIM. Observed 429/503 responses use Retry-After backoff.\n\nRendering requires an installed app and loads page resources during scanning. Strict download budgets must be cleared. Android requires a current System WebView. Logins, live forms, and arbitrary interactive workflows are not captured."
+      "size_bytes": 40557197,
+      "notes": "Automatically render detected dynamic catalogs and empty app shells in installed apps. Page loading is visible above advanced settings; static-only scans offer Enable JavaScript and rescan when content is missing.\n\nFix catalog pagination being delayed by image animations and layout changes. Preserve collected cards when a timeout occurs during a loading skeleton, and show live list-item counts and progress. Verified against the reported catalog on an actual iPhone: all 59 product cards across 10 pages in about 22 seconds.\n\nBrowser rendering still requires a cleared download budget, and rendered scans require review. Source/CDN download failures remain visible separately from discovery."
     }
   ]
 }

@@ -73,7 +73,8 @@ fn renderer(mode: Mode) -> Arc<Renderer> {
 async fn fixture() -> (String, tokio::task::JoinHandle<()>) {
     let app=Router::new().route("/robots.txt",get(||async{"User-agent: *\nDisallow: /private\n"}))
         .route("/",get(||async{Html("<title>Store shell</title><div class='block-product-list' id='catalog'></div><script>loadStore()</script>")}))
-        .route("/product",get(||async{Html("<title>Product shell</title><main>Loading</main>")}));
+        .route("/product",get(||async{Html("<title>Product shell</title><main>Loading</main>")}))
+        .route("/categories",get(||async{Html("<title>Catalog shell</title><div class='block-product-list' id='catalog'><nav><a class='category-list__link' href='/categories'>All products</a></nav><div class='skeleton-loader'>Loading</div></div><script>loadStore()</script>")}));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/", listener.local_addr().unwrap());
     (
@@ -150,6 +151,59 @@ async fn renders_before_discovery_requires_review_and_builds_an_offline_searchab
 }
 
 #[tokio::test]
+async fn automatic_mode_renders_a_catalog_with_category_navigation_without_advanced_settings() {
+    let (url, server) = fixture().await;
+    let temp = tempfile::tempdir().unwrap();
+    let engine = Engine::open(temp.path()).await.unwrap();
+    let renderer = renderer(Mode::Success);
+    engine.set_page_renderer(renderer.clone()).await;
+    let mut config = config(format!("{url}categories"));
+    config.capture.render_javascript = false;
+    config.max_depth = 0;
+    let job = engine.create(config).await.unwrap();
+    let review = wait(&engine, &job.id, "review").await;
+    assert_eq!(renderer.calls.load(Ordering::SeqCst), 1);
+    assert!(review.entries[0].rendered.is_some());
+    assert!(!review.can_auto_start());
+    assert!(review
+        .logs
+        .iter()
+        .any(|log| log.message.contains("automatically rendering")));
+    server.abort();
+}
+
+#[tokio::test]
+async fn automatic_mode_keeps_review_when_budget_or_platform_prevents_rendering() {
+    for (with_renderer, static_only) in [(false, false), (true, false), (true, true)] {
+        let (url, server) = fixture().await;
+        let temp = tempfile::tempdir().unwrap();
+        let engine = Engine::open(temp.path()).await.unwrap();
+        let renderer = renderer(Mode::Success);
+        if with_renderer {
+            engine.set_page_renderer(renderer.clone()).await;
+        }
+        let mut config = config(url);
+        config.capture.render_javascript = false;
+        config.capture.auto_render_javascript = !static_only;
+        config.max_depth = 0;
+        if with_renderer && !static_only {
+            config.capture.max_download_mb = Some(1);
+        }
+        let job = engine.create(config).await.unwrap();
+        let review = wait(&engine, &job.id, "review").await;
+        assert_eq!(renderer.calls.load(Ordering::SeqCst), 0);
+        assert!(review.scan_truncated);
+        assert!(review.javascript_needed);
+        assert!(review
+            .logs
+            .iter()
+            .any(|log| log.message.contains("Dynamic content detected")));
+        assert!(!review.can_auto_start());
+        server.abort();
+    }
+}
+
+#[tokio::test]
 async fn pausing_drops_the_renderer_and_resume_keeps_the_scan_checkpoint() {
     let (url, server) = fixture().await;
     let temp = tempfile::tempdir().unwrap();
@@ -168,6 +222,7 @@ async fn pausing_drops_the_renderer_and_resume_keeps_the_scan_checkpoint() {
     let paused = wait(&engine, &job.id, "paused").await;
     assert!(paused.entries.is_empty());
     assert_eq!(paused.queue.len(), 1);
+    assert_eq!(paused.clone().view().queued_pages, 1);
     assert_eq!(blocked.dropped.load(Ordering::SeqCst), 1);
     engine.set_page_renderer(renderer(Mode::Success)).await;
     engine.resume(&job.id).await.unwrap();

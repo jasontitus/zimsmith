@@ -22,6 +22,7 @@ impl VideoQuality {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct CaptureOptions {
+    pub auto_render_javascript: bool,
     pub render_javascript: bool,
     pub render_timeout_secs: u64,
     pub embedded_videos: bool,
@@ -43,6 +44,7 @@ pub struct CaptureOptions {
 impl Default for CaptureOptions {
     fn default() -> Self {
         Self {
+            auto_render_javascript: true,
             render_javascript: false,
             render_timeout_secs: 45,
             embedded_videos: true,

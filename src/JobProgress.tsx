@@ -93,7 +93,7 @@ export function JobProgress({
         </strong>
         <span>
           {percent === null
-            ? `${completed} ${unit}`
+            ? `${completed} ${unit}${scan && job.queued_pages ? ` · ${job.queued_pages} pages queued` : ""}`
             : `${completed} of ${total} ${unit} · ${percent}%`}
         </span>
       </div>
@@ -113,6 +113,22 @@ export function JobProgress({
         <div style={{ width: percent === null ? undefined : `${percent}%` }} />
       </div>
       <p className="progress-detail">{label}</p>
+      {!compact && scan && progress?.unit === "render_items" && (
+        <div className="transfer-progress">
+          <span>Current page’s list items</span>
+          <strong>
+            {progress.completed}
+            {progress.total ? ` of ${progress.total}` : " captured"}
+          </strong>
+          {progress.total && (
+            <progress
+              aria-label="Current page list capture"
+              value={progress.completed}
+              max={progress.total}
+            />
+          )}
+        </div>
+      )}
       {!compact &&
         Boolean(progress && (progress.received > 0 || progress.expected)) && (
           <div className="transfer-progress">

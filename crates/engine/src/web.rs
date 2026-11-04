@@ -870,7 +870,21 @@ pub async fn scan(record: &Record) -> Result<()> {
             let (mut url, mime, mut body) = network.get(&http_url(&page.url)?).await?;
             anyhow::ensure!(!mime.contains("html") || !is_challenge(&String::from_utf8_lossy(&body)), "The site returned a browser verification challenge instead of content. Pause and retry later, or import a saved page.");
             let mut rendered = None;
-            if snapshot.config.capture.render_javascript && mime.contains("html") {
+            let dynamic = mime.contains("html")
+                && crate::snapshot::needs_javascript(&Html::parse_document(&String::from_utf8_lossy(&body)));
+            let automatic = snapshot.config.capture.auto_render_javascript && dynamic;
+            let can_render = record.renderer.read().await.is_some() && snapshot.config.capture.max_download_mb.is_none();
+            if dynamic && !snapshot.config.capture.render_javascript && !(automatic && can_render) {
+                record.change(|job| {
+                    job.scan_truncated = true;
+                    job.javascript_needed = true;
+                    job.log("warning", format!("Dynamic content detected at {url}. Enable JavaScript and rescan to discover missing content. Rendering requires an installed app and a cleared download budget. This static scan is incomplete; review before building."));
+                }).await?;
+            }
+            if (snapshot.config.capture.render_javascript || (automatic && can_render)) && mime.contains("html") {
+                if !snapshot.config.capture.render_javascript {
+                    record.log("info", format!("Dynamic content detected; automatically rendering {url}")).await?;
+                }
                 // Validate a redirect before executing any source JavaScript.
                 anyhow::ensure!(in_scope(&root, &url) || (page.depth == 0 && canonical_start_redirect(&root, &url)), "The source redirected outside the requested scope. Use its final URL explicitly.");
                 let delay = network.rendering_delay(&url).await?;

@@ -56,12 +56,26 @@ impl PageRenderer for BrowserRenderer {
             #[cfg(any(target_os = "ios", target_os = "android"))]
             {
                 let value = serde_json::to_value(&request)?;
-                let result = tauri::async_runtime::spawn_blocking(move || {
-                    app.state::<tauri_plugin_mobile_files::MobileFiles<tauri::Wry>>()
+                let render_app = app.clone();
+                let mut completion = tauri::async_runtime::spawn_blocking(move || {
+                    render_app
+                        .state::<tauri_plugin_mobile_files::MobileFiles<tauri::Wry>>()
                         .render_page(value, CAPTURE_SCRIPT)
-                })
-                .await?
-                .map_err(std::io::Error::other)?;
+                });
+                let result = loop {
+                    tokio::select! {
+                        result = &mut completion => break result?.map_err(std::io::Error::other)?,
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+                            let status_app = app.clone(); let id = request.id.clone();
+                            let status = tauri::async_runtime::spawn_blocking(move || status_app.state::<tauri_plugin_mobile_files::MobileFiles<tauri::Wry>>().render_status(&id));
+                            if let Ok(Ok(Ok(value))) = tokio::time::timeout(std::time::Duration::from_secs(2),status).await {
+                                if let (Some(events),Some(value)) = (&request.events,value.get("progress")) {
+                                    if let Ok(progress) = serde_json::from_value(value.clone()) { let _=events.send(zim_engine::render::RenderEvent::Progress(progress)); }
+                                }
+                            }
+                        }
+                    }
+                };
                 Ok(serde_json::from_value::<RenderedPage>(result)?)
             }
             #[cfg(not(any(target_os = "ios", target_os = "android")))]
@@ -135,6 +149,11 @@ async fn desktop(
         }
         if let Some(error) = value.get("error").and_then(|v| v.as_str()) {
             return Err(std::io::Error::other(error.to_string()).into());
+        }
+        if let (Some(events), Some(value)) = (&request.events, value.get("progress")) {
+            if let Ok(progress) = serde_json::from_value(value.clone()) {
+                let _ = events.send(zim_engine::render::RenderEvent::Progress(progress));
+            }
         }
         if value.get("html").is_some() {
             return Ok(serde_json::from_value(value)?);

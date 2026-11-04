@@ -1,6 +1,7 @@
 import type { CaptureOptions, Config } from "./types";
 
 export const captureDefaults: CaptureOptions = {
+  auto_render_javascript: true,
   render_javascript: false,
   render_timeout_secs: 45,
   embedded_videos: true,
@@ -30,6 +31,8 @@ export function normalizedCapture(config: Config): CaptureOptions {
     exclude_urls: value.exclude_urls.map((s) => s.trim()).filter(Boolean),
     subtitle_language: value.subtitle_language.trim(),
     render_javascript: config.kind === "website" && value.render_javascript,
+    auto_render_javascript:
+      config.kind === "website" && value.auto_render_javascript,
   };
 }
 export function matchesRule(pattern: string, value: string) {

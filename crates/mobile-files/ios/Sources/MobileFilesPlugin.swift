@@ -17,7 +17,7 @@ final class MobileFilesPlugin: Plugin, UIDocumentPickerDelegate, UIDocumentInter
         let args = try invoke.parseArgs(RenderPageArgs.self)
         DispatchQueue.main.async {
             guard self.captures.isEmpty, let host = self.manager.viewController?.view else { invoke.reject("The page browser is still stopping. Retry shortly."); return }
-            let capture = PageCapture(args, invoke: invoke) { [weak self] id in self?.captures.removeValue(forKey: id) }
+            let capture = PageCapture(args, success: { invoke.resolve($0) }, failure: { invoke.reject($0) }) { [weak self] id in self?.captures.removeValue(forKey: id) }
             self.captures[args.request.id] = capture
             capture.start(in: host)
         }
@@ -25,6 +25,10 @@ final class MobileFilesPlugin: Plugin, UIDocumentPickerDelegate, UIDocumentInter
     @objc public func cancelRender(_ invoke: Invoke) throws {
         let id = try invoke.parseArgs(CancelRenderArgs.self).id
         DispatchQueue.main.async { self.captures[id]?.cancel(); invoke.resolve(["cancelled": true]) }
+    }
+    @objc public func renderStatus(_ invoke: Invoke) throws {
+        let id = try invoke.parseArgs(CancelRenderArgs.self).id
+        DispatchQueue.main.async { invoke.resolve(["progress": self.captures[id]?.progress.map { $0 as Any } ?? NSNull()]) }
     }
     @objc public func sharedLinks(_ invoke: Invoke) throws {
         do { invoke.resolve(["items": try SharedURLInbox.appGroup().list()]) }

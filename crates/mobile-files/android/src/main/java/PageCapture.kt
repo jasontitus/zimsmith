@@ -21,6 +21,8 @@ class PageCapture(private val activity: Activity, private val args: RenderPageAr
     private var browser: WebView? = null
     private var finished = false
     private var evaluating = false
+    var progress: JSONObject? = null
+        private set
     private val id = args.request.id
     private val profile = "zimsmith-capture-$id"
     private val scopes = args.request.scopes
@@ -104,6 +106,7 @@ class PageCapture(private val activity: Activity, private val args: RenderPageAr
             try {
                 val result = JSONObject(value)
                 if (result.has("error")) { fail(result.getString("error")); return@evaluateJavascript }
+                if (result.has("progress")) { progress = result.getJSONObject("progress"); return@evaluateJavascript }
                 if (!result.has("html")) return@evaluateJavascript
                 if (result.getString("html").toByteArray(Charsets.UTF_8).size > cap) { fail("Rendered HTML exceeds its capture limit"); return@evaluateJavascript }
                 succeed(result)

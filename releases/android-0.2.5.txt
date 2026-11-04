@@ -1,0 +1,5 @@
+Automatically render detected dynamic catalogs and empty app shells in installed apps. Page loading is visible above advanced settings; static-only scans offer Enable JavaScript and rescan when content is missing.
+
+Fix catalog pagination being delayed by image animations and layout changes. Preserve collected cards when a timeout occurs during a loading skeleton, and show live list-item counts and progress. Verified against the reported catalog on an actual iPhone: all 59 product cards across 10 pages in about 22 seconds.
+
+Browser rendering still requires a cleared download budget, and rendered scans require review. Source/CDN download failures remain visible separately from discovery.

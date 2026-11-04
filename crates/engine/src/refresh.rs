@@ -122,7 +122,10 @@ pub async fn compare(record: &Record) -> Result<()> {
             });
         }
     }
-    refresh.complete = !snapshot.scan_truncated && entries.iter().all(|e| e.state != "scan_failed");
+    refresh.complete = !snapshot.scan_truncated
+        && entries.iter().all(|e| {
+            e.state != "scan_failed" && e.rendered.as_ref().is_none_or(|rendered| rendered.settled)
+        });
     refresh.compared = true;
     refresh.changes = changes;
     refresh.previous.clear();
@@ -167,6 +170,7 @@ impl crate::Engine {
             next.config.validate()?;
         }
         next.sitemap_checkpoint = Default::default();
+        next.javascript_needed = false;
         let mut refresh = RefreshState {
             previous: next.entries.clone(),
             previous_quality: next.config.capture.video_quality,

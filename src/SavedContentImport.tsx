@@ -139,6 +139,7 @@ export function SavedContentImport({
             ...normalizedCapture(config),
             seed_urls: [],
             render_javascript: false,
+            auto_render_javascript: false,
           },
         },
         files.map((file) => ({ path: path(file), size: file.size })),

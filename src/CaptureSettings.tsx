@@ -1,7 +1,6 @@
 import type { CaptureOptions, Config } from "./types";
 import { captureOptions } from "./capture";
 import { browserOnly } from "./browser/client";
-import { isTauri } from "@tauri-apps/api/core";
 export function CaptureSettings({
   config,
   onChange,
@@ -69,24 +68,7 @@ export function CaptureSettings({
         <>
           {!browserOnly && (
             <>
-              <label className="check-label">
-                <input
-                  type="checkbox"
-                  checked={c.render_javascript}
-                  disabled={!isTauri()}
-                  onChange={(e) =>
-                    update("render_javascript", e.target.checked)
-                  }
-                />
-                Render JavaScript before capturing
-              </label>
-              <p className="settings-note">
-                Use for stores and pages that load their content dynamically.
-                Runs on this device and loads page resources during scanning.
-                Browser captures always require review. Available in installed
-                apps.
-              </p>
-              {c.render_javascript && (
+              {(c.render_javascript || c.auto_render_javascript) && (
                 <>
                   <label htmlFor="render-timeout">
                     Rendering timeout per page (seconds)

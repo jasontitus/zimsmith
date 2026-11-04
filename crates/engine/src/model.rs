@@ -225,6 +225,10 @@ pub struct AssetSummary {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Job {
     #[serde(default)]
+    pub queued_pages: usize,
+    #[serde(default)]
+    pub javascript_needed: bool,
+    #[serde(default)]
     pub sitemap_checkpoint: crate::sitemap::SitemapState,
     pub id: String,
     pub config: NewJob,
@@ -376,6 +380,7 @@ impl Job {
 
     pub fn can_auto_start(&self) -> bool {
         self.refresh.is_none()
+            && !self.javascript_needed
             && !self.config.capture.render_javascript
             && self
                 .entries
@@ -421,6 +426,7 @@ impl Job {
             refresh.previous.clear();
             refresh.fingerprints.clear();
         }
+        self.queued_pages = self.queue.len();
         self.queue.clear();
         self.visited.clear();
         self.resources.clear();

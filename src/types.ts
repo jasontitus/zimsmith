@@ -13,6 +13,7 @@ export interface Settings {
   zstd_level: number;
 }
 export interface CaptureOptions {
+  auto_render_javascript: boolean;
   render_javascript: boolean;
   render_timeout_secs: number;
   embedded_videos: boolean;
@@ -77,6 +78,8 @@ export interface CaptureSummary {
   warnings: string[];
 }
 export interface Job {
+  queued_pages?: number;
+  javascript_needed?: boolean;
   capture_report?: CaptureSummary | null;
   validation?: {
     checksum_verified: boolean;

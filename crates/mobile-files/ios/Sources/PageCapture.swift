@@ -1,7 +1,6 @@
 import Foundation
 import UIKit
 import WebKit
-import Tauri
 
 struct RenderRequestArgs: Decodable {
     let id: String
@@ -16,15 +15,17 @@ struct CancelRenderArgs: Decodable { let id: String }
 
 final class PageCapture: NSObject, WKNavigationDelegate, WKUIDelegate {
     private let args: RenderPageArgs
-    private let invoke: Invoke
+    private let success: ([String: Any]) -> Void
+    private let failure: (String) -> Void
     private let complete: (String) -> Void
     private var view: WKWebView?
     private var timer: Timer?
     private var finished = false
     private var evaluating = false
+    private(set) var progress: [String: Any]?
 
-    init(_ args: RenderPageArgs, invoke: Invoke, complete: @escaping (String) -> Void) {
-        self.args = args; self.invoke = invoke; self.complete = complete
+    init(_ args: RenderPageArgs, success: @escaping ([String: Any]) -> Void, failure: @escaping (String) -> Void, complete: @escaping (String) -> Void) {
+        self.args = args; self.success = success; self.failure = failure; self.complete = complete
     }
     func start(in host: UIView) {
         guard let url = URL(string: args.request.url), allowed(url) else { fail("Invalid page capture URL"); return }
@@ -50,7 +51,10 @@ final class PageCapture: NSObject, WKNavigationDelegate, WKUIDelegate {
             guard let list = list else { self.fail(error?.localizedDescription ?? "Could not disable browser media downloads"); return }
             browser.configuration.userContentController.add(list)
             browser.load(URLRequest(url: url, timeoutInterval: Double(self.args.request.timeout_secs)))
-            self.timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.poll() }
+            let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in self?.poll() }
+            self.timer = timer
+            // Scrolling the main app must not suspend page-capture polling.
+            RunLoop.main.add(timer, forMode: .common)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + Double(args.request.timeout_secs) + 5) { [weak self] in self?.fail("Browser rendering timed out. Increase its timeout or retry.") }
     }
@@ -77,6 +81,7 @@ final class PageCapture: NSObject, WKNavigationDelegate, WKUIDelegate {
             if let error = error { self.fail("Browser capture failed: \(error.localizedDescription)"); return }
             guard let result = value as? [String: Any] else { return }
             if let error = result["error"] as? String { self.fail(error); return }
+            if let progress = result["progress"] as? [String: Any] { self.progress = progress; return }
             guard let html = result["html"] as? String else { return }
             guard html.utf8.count <= min(8 * 1024 * 1024, Int(self.args.request.max_html_bytes)) else { self.fail("Rendered HTML exceeds its capture limit"); return }
             self.succeed(result)
@@ -91,11 +96,11 @@ final class PageCapture: NSObject, WKNavigationDelegate, WKUIDelegate {
     }
     private func fail(_ message: String) {
         guard !finished else { return }; finished = true
-        cleanup(); invoke.reject(message)
+        cleanup(); failure(message)
     }
     private func succeed(_ result: [String: Any]) {
         guard !finished else { return }; finished = true
-        cleanup(); invoke.resolve(result)
+        cleanup(); success(result)
     }
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let url = navigationAction.request.url else { decisionHandler(.cancel); return }

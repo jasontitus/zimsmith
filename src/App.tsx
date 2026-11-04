@@ -38,7 +38,7 @@ import {
 import { CaptureReport } from "./CaptureReport";
 import { SavedContentImport } from "./SavedContentImport";
 import { CaptureSettings } from "./CaptureSettings";
-import { normalizedCapture } from "./capture";
+import { normalizedCapture, captureOptions } from "./capture";
 import { AndroidUpdates } from "./AndroidUpdates";
 import {
   api,
@@ -733,6 +733,42 @@ export default function App() {
                         />
                       </div>
                     </div>
+                    {native && config.kind === "website" && (
+                      <div>
+                        <label htmlFor="page-loading">Page loading</label>
+                        <select
+                          id="page-loading"
+                          value={
+                            captureOptions(config).render_javascript
+                              ? "always"
+                              : captureOptions(config).auto_render_javascript
+                                ? "auto"
+                                : "static"
+                          }
+                          onChange={(e) =>
+                            update("capture", {
+                              ...captureOptions(config),
+                              render_javascript: e.target.value === "always",
+                              auto_render_javascript: e.target.value === "auto",
+                            })
+                          }
+                        >
+                          <option value="auto">
+                            Automatic · render dynamic pages when needed
+                          </option>
+                          <option value="always">
+                            Render JavaScript on every page
+                          </option>
+                          <option value="static">Static HTML only</option>
+                        </select>
+                        <p className="field-hint">
+                          Automatic detects empty app shells and dynamic
+                          catalogs. Rendering runs on this device and loads
+                          scripts and page resources during scanning. Rendered
+                          captures always require review.
+                        </p>
+                      </div>
+                    )}
                     <button
                       type="button"
                       className="advanced-toggle"
@@ -1567,6 +1603,49 @@ export default function App() {
                   icon={<ShieldCheck size={20} />}
                 />
               </div>
+              {job.javascript_needed &&
+                ["review", "failed", "paused"].includes(job.status) && (
+                  <section className="alert warning" role="status">
+                    <strong>
+                      This site needs JavaScript to discover more content.
+                    </strong>
+                    <p>
+                      The static scan is incomplete.{" "}
+                      {native
+                        ? "Enable JavaScript and rescan before choosing what to download."
+                        : "Use an installed app or import saved HTML to capture dynamic content."}
+                    </p>
+                    {native && !job.import && (
+                      <button
+                        className="button secondary"
+                        disabled={busy || !!job.config.capture?.max_download_mb}
+                        onClick={() =>
+                          void action(async () => {
+                            await api.editRetry(job.id, {
+                              ...job.config,
+                              capture: {
+                                ...captureOptions(job.config),
+                                render_javascript: true,
+                                auto_render_javascript: true,
+                              },
+                            });
+                            setToast(
+                              "JavaScript enabled. Rescanning on this device; review the results before downloading.",
+                            );
+                          })
+                        }
+                      >
+                        Enable JavaScript and rescan
+                      </button>
+                    )}
+                    {!!job.config.capture?.max_download_mb && (
+                      <p>
+                        Clear the download budget in Edit crawl to allow browser
+                        rendering.
+                      </p>
+                    )}
+                  </section>
+                )}
               <section className="card preview-card">
                 <div className="section-header">
                   <div>
@@ -1579,9 +1658,13 @@ export default function App() {
                       {job.status === "scanning"
                         ? job.config.capture?.render_javascript
                           ? "Rendering pages on this device. Scripts and page resources load during the scan; review is always required. You can pause at any time."
-                          : job.auto_start_item_limit !== null
-                            ? `Discovering items. Complete, error-free scans of up to ${job.auto_start_item_limit} items will start automatically.`
-                            : "Discovering items. Media and page assets wait for your confirmation."
+                          : native &&
+                              (job.config.capture?.auto_render_javascript ??
+                                true)
+                            ? "Scanning pages. Dynamic content is rendered automatically on this device; rendered captures require review."
+                            : job.auto_start_item_limit !== null
+                              ? `Discovering items. Complete, error-free scans of up to ${job.auto_start_item_limit} items will start automatically.`
+                              : "Discovering items. Media and page assets wait for your confirmation."
                         : job.status === "review"
                           ? "Choose what to keep. Asset sizes and some media sizes are not known yet."
                           : "Completed items are checkpointed and reused when you resume."}

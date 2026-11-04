@@ -74,6 +74,11 @@ class MobileFilesPlugin(private val activity: Activity): Plugin(activity) {
         activity.runOnUiThread { captures[id]?.cancel(); invoke.resolve(JSObject().put("cancelled", true)) }
     }
     @Command
+    fun renderStatus(invoke: Invoke) {
+        val id = invoke.parseArgs(SharedLinkArgs::class.java).id
+        activity.runOnUiThread { invoke.resolve(JSObject().put("progress", captures[id]?.progress ?: org.json.JSONObject.NULL)) }
+    }
+    @Command
     fun sharedLinks(invoke: Invoke) {
         try { invoke.resolve(JSObject().put("items", SharedLinks.list(activity))) }
         catch (_: Exception) { invoke.reject("Could not read your shared links.") }

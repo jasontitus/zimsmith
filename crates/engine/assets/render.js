@@ -100,12 +100,13 @@
       if (!items.length) continue;
       if (root.getAttribute("data-zim-collection") !== key) root.setAttribute("data-zim-collection", key);
       let catalog = catalogs.get(key);
-      if (!catalog) { catalog = { saved: new Map(), pages: 0, signature: "", waiting: 0, stalled: false, expected: 0, url: location.href, kind, finished: false }; catalogs.set(key, catalog); }
+      if (!catalog) { catalog = { saved: new Map(), pages: 0, signature: "", waiting: 0, changed: now, stalled: false, expected: 0, url: location.href, kind, finished: false, template: null }; catalogs.set(key, catalog); }
       catalog.expected = expected;
       const itemKey = node => (node.matches("a[href]") ? node.href : node.querySelector("a[href]")?.href) || node.id || node.getAttribute("data-id") || node.textContent.trim().slice(0, 500);
       const signature = items.map(itemKey).join("\n");
       if (signature !== catalog.signature) {
-        catalog.signature = signature; catalog.pages++; catalog.waiting = 0;
+        catalog.signature = signature; catalog.pages++; catalog.waiting = 0; catalog.changed = now;
+        catalog.template = root.cloneNode(true);
         for (const item of items) {
           if (catalog.saved.size >= 500) break;
           const copy = item.cloneNode(true);
@@ -119,7 +120,8 @@
         if (now - catalog.waiting < 5000) return true;
         catalog.stalled = true; warn("List pagination did not advance; only saved items are included.");
       }
-      if (!catalog.finished && !catalog.stalled && catalog.pages < 20 && catalog.saved.size < 500 && now - state.changed >= 750 && !next.closest("form")) {
+      // Image fades, resize observers and unrelated animations must not hold pagination forever.
+      if (!catalog.finished && !catalog.stalled && catalog.pages < 20 && catalog.saved.size < 500 && now - catalog.changed >= 500 && !next.closest("form")) {
         catalog.waiting = now; next.click(); state.changed = now; return true;
       }
     }
@@ -132,8 +134,15 @@
     copyImages(document.documentElement, clone);
     let catalogUrl;
     for (const [id, catalog] of catalogs) {
-      const list = clone.querySelector(`[data-zim-collection="${CSS.escape(id)}"]`), content = catalog.kind === "catalog" ? list?.querySelector(".product-list__content") : list;
-      if (!content) continue;
+      let list = clone.querySelector(`[data-zim-collection="${CSS.escape(id)}"]`);
+      let content = catalog.kind === "catalog" ? list?.querySelector(".product-list__content") : list;
+      // Frameworks replace the whole list with a skeleton while fetching the next page.
+      // Keep captured cards when a deadline falls inside that transition.
+      if (list && !content && catalog.template) {
+        const restored = catalog.template.cloneNode(true); list.replaceWith(restored); list = restored;
+        content = catalog.kind === "catalog" ? list.querySelector(".product-list__content") : list;
+      }
+      if (!content) { settled = false; warn("A captured list disappeared before its snapshot could be saved."); continue; }
       content.replaceChildren(...Array.from(catalog.saved.values(), node => node.cloneNode(true)));
       list.querySelectorAll(".product-list-pagination").forEach(node => node.remove());
       clone.querySelectorAll(`[data-zim-pagination="${CSS.escape(id)}"]`).forEach(node => node.remove());
@@ -144,6 +153,7 @@
       if (catalog.expected > catalog.saved.size || !catalog.finished) { settled = false; warn(`List capture is incomplete: ${catalog.saved.size}${catalog.expected ? " of " + catalog.expected : ""} items were saved.`); }
       if (!catalogUrl) catalogUrl = catalog.url;
     }
+    clone.querySelectorAll("script,noscript").forEach(node => node.remove());
     for (const video of clone.querySelectorAll("video,audio")) { video.removeAttribute("autoplay"); video.setAttribute("preload", "none"); }
     // Frameworks may populate CSSOM rules without writing text into their style nodes.
     let css = "";
@@ -160,7 +170,7 @@
     if (!settled && !state.rate_limit) warn("The page reached its rendering time/scroll limit; some dynamic content may be missing.");
     return state.result;
   }
-  function poll() {
+  function pollContent() {
     if (state.result) return state.result;
     if (/^(just a moment(?:\.\.\.|…)|attention required! \| cloudflare)$/i.test(document.title.trim()) && (document.querySelector('script[src*="/cdn-cgi/challenge-platform/"]') || document.documentElement.outerHTML.includes("_cf_chl_opt"))) throw new Error("The browser received a verification challenge instead of page content");
     if (state.rate_limit) return snapshot(false);
@@ -169,7 +179,7 @@
     for (const media of document.querySelectorAll("video,audio")) { media.pause(); if (media.preload !== "none") media.preload = "none"; }
     if (document.readyState !== "complete" || state.pending) return null;
     if (collectCatalogs(now)) return null;
-    if (catalogs.size && Array.from(catalogs.values()).every(catalog => catalog.finished && !catalog.waiting) && elapsed >= 3000 && now - state.changed >= 2000) return snapshot(true);
+    if (catalogs.size && Array.from(catalogs.values()).every(catalog => catalog.finished && !catalog.waiting && now - catalog.changed >= 1000) && elapsed >= 3000) return snapshot(true);
     const height = Math.max(document.body?.scrollHeight || 0, document.documentElement.scrollHeight);
     if (now - state.scrolled >= 750 && state.steps < 20) {
       const bottom = window.scrollY + window.innerHeight >= height - 4;
@@ -185,6 +195,14 @@
     }
     if (elapsed >= 3000 && now - state.changed >= 2000) return snapshot(state.steps < 20);
     return null;
+  }
+  function poll() {
+    const result = pollContent();
+    if (result) return result;
+    const lists = Array.from(catalogs.values());
+    const captured_items = lists.reduce((n, list) => n + list.saved.size, 0);
+    const expected_items = lists.reduce((n, list) => n + list.expected, 0);
+    return { progress: { captured_items, expected_items: expected_items || null, pages: lists.reduce((n, list) => n + list.pages, 0), pending_requests: state.pending, elapsed_secs: Math.floor((performance.now() - started) / 1000) } };
   }
   Object.defineProperty(window, "__zimsmithCapture", { value: Object.freeze({ poll }), configurable: false });
 })();

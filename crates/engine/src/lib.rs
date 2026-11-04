@@ -206,6 +206,8 @@ impl Engine {
         let settings = self.settings().await;
         let id = uuid::Uuid::new_v4().to_string();
         let mut job = Job {
+            queued_pages: 0,
+            javascript_needed: false,
             sitemap_checkpoint: Default::default(),
             id: id.clone(),
             queue: config.starting_pages(),
@@ -388,6 +390,8 @@ impl Engine {
                 || config.capture.discover_sitemaps != current.config.capture.discover_sitemaps
                 || config.capture.media != current.config.capture.media
                 || config.capture.render_javascript != current.config.capture.render_javascript
+                || config.capture.auto_render_javascript
+                    != current.config.capture.auto_render_javascript
                 || config.capture.render_timeout_secs != current.config.capture.render_timeout_secs;
             let mut job = current.clone();
             if config.capture.video_quality != current.config.capture.video_quality
@@ -425,6 +429,7 @@ impl Engine {
             )
             .await?;
             if rescan {
+                job.javascript_needed = false;
                 job.sitemap_checkpoint = Default::default();
                 for file in ["media-cursor.json", "youtube-playlist-page.json"] {
                     match tokio::fs::remove_file(record.dir.join(file)).await {
@@ -727,6 +732,11 @@ async fn drive(record: &Record) -> Result<()> {
             .await;
         if job.config.capture.render_javascript {
             record.log("info", "Browser scan: source scripts and page resources load on this device to discover rendered content. Videos wait for approval; review is always required.").await?;
+        } else if job.config.kind == SourceKind::Website
+            && job.config.capture.auto_render_javascript
+            && record.renderer.read().await.is_some()
+        {
+            record.log("info", "Scanning page HTML. Pages with detected dynamic content will render automatically on this device and require review; scripts and page resources load during that step.").await?;
         } else {
             record.log("info", "Scanning metadata only. Website HTML is cached; media and page assets wait until scanning finishes and the download is approved.").await?;
         }

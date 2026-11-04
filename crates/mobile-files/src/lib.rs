@@ -28,6 +28,11 @@ impl<R: Runtime> MobileFiles<R> {
             .run_mobile_plugin("cancelRender", serde_json::json!({"id":id}))
             .map_err(|e| e.to_string())
     }
+    pub fn render_status(&self, id: &str) -> Result<serde_json::Value, String> {
+        self.0
+            .run_mobile_plugin("renderStatus", serde_json::json!({"id":id}))
+            .map_err(|e| e.to_string())
+    }
     pub fn shared_links(&self) -> Result<serde_json::Value, String> {
         self.0
             .run_mobile_plugin("sharedLinks", serde_json::json!({}))

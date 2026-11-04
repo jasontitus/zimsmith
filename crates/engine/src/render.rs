@@ -24,6 +24,17 @@ pub struct RenderRequest {
 #[derive(Clone, Debug)]
 pub enum RenderEvent {
     Started,
+    Progress(RenderProgress),
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RenderProgress {
+    pub captured_items: u64,
+    pub expected_items: Option<u64>,
+    pub pages: u64,
+    pub pending_requests: u64,
+    pub elapsed_secs: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -88,16 +99,27 @@ pub async fn capture(
     let timeout = request.timeout_secs;
     let queued = tokio::time::Instant::now();
     let mut started = None;
+    let mut progress: Option<RenderProgress> = None;
     let mut future = renderer.render(request);
+    let mut ticks = tokio::time::interval(std::time::Duration::from_secs(1));
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut result = loop {
         tokio::select! {
             value = &mut future => break value?,
-            Some(RenderEvent::Started) = updates.recv() => started = Some(tokio::time::Instant::now()),
-            _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+            Some(event) = updates.recv() => match event {
+                RenderEvent::Started => started = Some(tokio::time::Instant::now()),
+                RenderEvent::Progress(value) => {
+                    show_progress(record, url, &value, timeout).await;
+                    progress = Some(value);
+                }
+            },
+            _ = ticks.tick() => {
                 if let Some(start) = started {
                     let elapsed = start.elapsed().as_secs();
                     anyhow::ensure!(elapsed < timeout + 15, "The page browser did not respond before its rendering deadline. Resume to retry.");
-                    record.progress(format!("Rendering JavaScript · {elapsed}s elapsed"), elapsed.min(timeout), Some(timeout), "seconds").await;
+                    let mut value = progress.clone().unwrap_or_default();
+                    value.elapsed_secs = elapsed;
+                    show_progress(record, url, &value, timeout).await;
                 } else {
                     anyhow::ensure!(queued.elapsed().as_secs() < 300, "The page browser stayed busy for five minutes. Pause another rendered crawl and retry.");
                     record.progress("Waiting for the on-device page browser", 0, None, "pages").await;
@@ -127,6 +149,47 @@ pub async fn capture(
     }
     result.info.warnings.truncate(20);
     Ok(result)
+}
+
+async fn show_progress(
+    record: &crate::Record,
+    url: &url::Url,
+    progress: &RenderProgress,
+    timeout: u64,
+) {
+    if progress.captured_items > 0 {
+        let count = progress
+            .expected_items
+            .map(|n| format!("{} of {n}", progress.captured_items))
+            .unwrap_or_else(|| progress.captured_items.to_string());
+        record
+            .progress(
+                format!(
+                    "Rendering {} · {count} list items · {} list pages · {}s",
+                    url.path(),
+                    progress.pages,
+                    progress.elapsed_secs
+                ),
+                progress.captured_items,
+                progress.expected_items,
+                "render_items",
+            )
+            .await;
+    } else {
+        record
+            .progress(
+                format!(
+                    "Rendering {} · {}s · {} page requests pending",
+                    url.path(),
+                    progress.elapsed_secs,
+                    progress.pending_requests
+                ),
+                progress.elapsed_secs.min(timeout),
+                Some(timeout),
+                "seconds",
+            )
+            .await;
+    }
 }
 
 impl crate::Engine {

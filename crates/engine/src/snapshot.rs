@@ -138,12 +138,43 @@ pub fn missing_catalogs(document: &Html) -> BTreeSet<String> {
     document
         .select(&Selector::parse(".block-product-list[id]").unwrap())
         .filter(|list| {
-            list.text().all(|s| s.trim().is_empty())
-                && list
-                    .select(&Selector::parse("a[href]").unwrap())
-                    .next()
-                    .is_none()
+            // Category navigation is already present while the products are still loading.
+            // It must not make an otherwise empty catalog count as captured.
+            !list
+                .select(&Selector::parse("a[href]").unwrap())
+                .any(|link| {
+                    !link
+                        .value()
+                        .classes()
+                        .any(|class| class.starts_with("category-list__"))
+                })
         })
         .filter_map(|list| list.value().attr("id").map(str::to_string))
         .collect()
+}
+
+pub fn needs_javascript(document: &Html) -> bool {
+    if !missing_catalogs(document).is_empty() {
+        return true;
+    }
+    if document
+        .select(&Selector::parse("script").unwrap())
+        .next()
+        .is_none()
+    {
+        return false;
+    }
+    document
+        .select(
+            &Selector::parse("#app,#root,#__next,#__nuxt,#___gatsby,[data-reactroot],app-root")
+                .unwrap(),
+        )
+        .any(|root| {
+            let text = root.text().collect::<String>().trim().to_ascii_lowercase();
+            text.is_empty()
+                || matches!(
+                    text.as_str(),
+                    "loading" | "loading..." | "loading…" | "please wait" | "please wait..."
+                )
+        })
 }
