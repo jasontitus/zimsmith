@@ -1,0 +1,149 @@
+//! Turn known script-dependent presentation states into static HTML.
+use crate::archive::escape;
+use anyhow::Result;
+use lol_html::{element, rewrite_str, RewriteStrSettings};
+use scraper::{Html, Selector};
+use std::collections::{BTreeMap, BTreeSet};
+
+pub fn reveal(class: &str, role: Option<&str>) -> bool {
+    role.is_some()
+        || class.split_whitespace().any(|c| {
+            matches!(
+                c,
+                "transition--fade" | "transition--slide" | "transition--scale"
+            )
+        })
+}
+
+pub fn video_links(document: &Html) -> BTreeMap<String, String> {
+    let mut links = BTreeMap::new();
+    for video in document.select(&Selector::parse(".video[id]").unwrap()) {
+        if video
+            .select(&Selector::parse(".video__play--youtube").unwrap())
+            .next()
+            .is_none()
+        {
+            continue;
+        }
+        let Some(image) = video.select(&Selector::parse("img[src]").unwrap()).next() else {
+            continue;
+        };
+        let Some(url) = image
+            .value()
+            .attr("src")
+            .and_then(|s| crate::web::http_url(s).ok())
+        else {
+            continue;
+        };
+        if !matches!(url.host_str(), Some("i.ytimg.com" | "img.youtube.com")) {
+            continue;
+        }
+        let segments: Vec<_> = url.path_segments().into_iter().flatten().collect();
+        if segments.len() < 2 || !["vi", "vi_webp"].contains(&segments[0]) {
+            continue;
+        }
+        let id = segments[1];
+        if id.len() == 11
+            && id
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+        {
+            links.insert(
+                video.value().attr("id").unwrap().to_string(),
+                format!("https://youtu.be/{id}"),
+            );
+        }
+    }
+    links
+}
+
+pub fn prepare(html: &str, document: &Html) -> Result<String> {
+    let dropdown = Selector::parse(".block-header-layout-mobile__dropdown").unwrap();
+    let menu = document.select(&dropdown).next();
+    let anchors = Selector::parse("a[href]").unwrap();
+    let mut seen = BTreeSet::new();
+    let links = menu
+        .into_iter()
+        .flat_map(|menu| menu.select(&anchors))
+        .filter_map(|a| {
+            let href = a.value().attr("href")?;
+            let text = a
+                .text()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            (!text.is_empty() && seen.insert((href.to_owned(), text.clone())))
+                .then(|| format!("<a href=\"{}\">{}</a>", escape(href), escape(&text)))
+        })
+        .take(100)
+        .collect::<String>();
+    let has_menu = !links.is_empty()
+        && document
+            .select(&Selector::parse("button.block-header__hamburger-menu").unwrap())
+            .next()
+            .is_some();
+    let videos = video_links(document);
+    let has_videos = !videos.is_empty();
+    let catalogs = missing_catalogs(document);
+    if !has_menu && !has_videos && catalogs.is_empty() {
+        return Ok(html.into());
+    }
+    let replacement = format!("<details class=\"zim-site-menu\"><summary>Menu</summary><nav aria-label=\"Site pages\">{links}</nav></details>");
+    Ok(rewrite_str(
+        html,
+        RewriteStrSettings {
+            element_content_handlers: vec![
+                element!(".block-product-list[id]", move |el| {
+                    if el
+                        .get_attribute("id")
+                        .is_some_and(|id| catalogs.contains(&id))
+                    {
+                        el.set_inner_content("<aside class=\"zim-missing-content\"><h2>Store catalog not captured</h2><p>This catalog loads its products with JavaScript. Product listings are not included in this offline capture. Use Original source to browse the live store.</p></aside>",lol_html::html_content::ContentType::Html);
+                    }
+                    Ok(())
+                }),
+                element!("button.block-header__hamburger-menu", move |el| {
+                    if has_menu {
+                        el.replace(&replacement, lol_html::html_content::ContentType::Html);
+                    }
+                    Ok(())
+                }),
+                element!(".block-header-layout-mobile__dropdown", move |el| {
+                    if has_menu {
+                        el.remove();
+                    }
+                    Ok(())
+                }),
+                element!(".video[id]", move |el| {
+                    if let Some(url) = el.get_attribute("id").and_then(|id| videos.get(&id)) {
+                        el.append(&format!("<a class=\"zim-online-video\" href=\"{}\">Watch video online ↗</a>",escape(url)),lol_html::html_content::ContentType::Html);
+                    }
+                    Ok(())
+                }),
+                element!(".video__play--youtube", move |el| {
+                    if has_videos {
+                        el.remove();
+                    }
+                    Ok(())
+                }),
+            ],
+            ..Default::default()
+        },
+    )?)
+}
+
+pub fn missing_catalogs(document: &Html) -> BTreeSet<String> {
+    document
+        .select(&Selector::parse(".block-product-list[id]").unwrap())
+        .filter(|list| {
+            list.text().all(|s| s.trim().is_empty())
+                && list
+                    .select(&Selector::parse("a[href]").unwrap())
+                    .next()
+                    .is_none()
+        })
+        .filter_map(|list| list.value().attr("id").map(str::to_string))
+        .collect()
+}

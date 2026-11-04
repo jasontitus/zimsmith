@@ -17,6 +17,7 @@ reqwest.workspace = true
 uuid.workspace = true
 url = "2"
 scraper = "0.22"
+cssparser = "=0.37.0"
 lol_html = "2"
 md-5 = "0.10.6"
 sha2 = "0.10"

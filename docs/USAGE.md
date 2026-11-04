@@ -81,3 +81,9 @@ For a website URL list, paste one starting URL per line (or choose a `.txt`/`.ur
 ### Capture and validation report
 
 Completed details show captured items, saved/omitted/excluded assets, links outside the archive, and caption gaps. The ZIM’s **Capture report** gives full results in HTML and JSON. Possible empty/blocked pages are flagged for inspection. Checksum and directory checks run before the app marks a new archive ready. A validation pass does not guarantee every original page or video renders correctly. Progress also calls out prolonged inactivity; pause/resume retries from saved checkpoints.
+
+### Static website fidelity
+
+Saved pages activate supported reveal animations and replace supported script-dependent mobile menus with native HTML menus. Rebuilding saved content applies these repairs and refreshes readable search excerpts without re-downloading pages. CSS parsing preserves data-URL SVGs and local fragments; old erroneous stylesheet dependencies are repaired locally. Native builds can recover fonts from Google Fonts when a recognized public font proxy is temporarily unavailable, while preserving robots rules and rate-limit cooldowns.
+
+Website captures label supported YouTube embeds as **Watch video online** and disclose that the movies were not downloaded. Empty supported client-rendered store catalogs get a visible notice and capture-report warning. JavaScript-only product catalogs and online forms still require the live site.

@@ -199,8 +199,13 @@ impl crate::Engine {
         next.downloaded_bytes = 0;
         next.refresh = Some(refresh);
         if next.config.kind == SourceKind::Website {
-            for resource in next.resources.values_mut().filter(|r| r.state == "done") {
+            for resource in next
+                .resources
+                .values_mut()
+                .filter(|r| ["done", "failed", "skipped"].contains(&r.state.as_str()))
+            {
                 resource.state = "pending".into();
+                resource.error = None;
             }
         }
         next.entries.clear();

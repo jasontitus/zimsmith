@@ -18,6 +18,7 @@ pub fn escape(text: &str) -> String {
 }
 
 pub async fn package(record: &Record) -> Result<()> {
+    crate::web::repair_saved_stylesheets(record).await?;
     crate::thumbnails::prepare(record).await?;
     let job = record.job.lock().await.clone();
     anyhow::ensure!(
@@ -128,6 +129,8 @@ pub async fn package(record: &Record) -> Result<()> {
                     record.dir.join("cache").join(format!("{}.html", entry.id)),
                 )
                 .await?;
+                catalog_entry.text =
+                    crate::web::visible_text(&scraper::Html::parse_document(&html));
                 let effective = tokio::fs::read_to_string(
                     record.dir.join("cache").join(format!("{}.url", entry.id)),
                 )
@@ -421,10 +424,18 @@ fn rewrite_page(
         .unwrap_or_else(|| source.clone());
     let style_paths = paths.clone();
     let style_base = base.clone();
-    let page = rewrite_str(html, RewriteStrSettings { element_content_handlers: vec![
+    let prepared = crate::snapshot::prepare(html, &parsed)?;
+    let page = rewrite_str(&prepared, RewriteStrSettings { element_content_handlers: vec![
         element!("script, iframe, object, embed, base, meta[http-equiv], link[rel='preload'], link[rel='modulepreload']", |el| { el.remove(); Ok(()) }),
         element!("form", |el| { el.remove_and_keep_content(); Ok(()) }),
         element!("*", |el| {
+            let mut classes = el.get_attribute("class").unwrap_or_default();
+            let role = el.get_attribute("data-animation-role");
+            if crate::snapshot::reveal(&classes, role.as_deref()) {
+                el.set_attribute("data-animation-state", "active")?;
+                if role.as_deref() == Some("image") && !classes.split_whitespace().any(|c| c == "loaded") { classes.push_str(" loaded"); el.set_attribute("class", &classes)?; }
+            }
+            if el.get_attribute("data-aos").is_some() && !classes.split_whitespace().any(|c| c == "aos-animate") { classes.push_str(" aos-animate"); el.set_attribute("class", &classes)?; }
             if ["img", "source"].contains(&el.tag_name().as_str()) && el.get_attribute("src").is_none() {
                 let fallback = el.get_attribute("data-src").or_else(|| el.get_attribute("srcset").and_then(|s| s.split(',').next().and_then(|s| s.split_whitespace().next()).map(str::to_string)));
                 if let Some(src) = fallback { el.set_attribute("src", &src)?; }
@@ -433,6 +444,7 @@ fn rewrite_page(
             for attr in attrs { if attr.starts_with("on") || ["srcset", "integrity", "crossorigin", "nonce", "action", "formaction", "ping"].contains(&attr.as_str()) { el.remove_attribute(&attr); } }
             for attr in ["href", "src", "poster"] {
                 let Some(value) = el.get_attribute(attr) else { continue; };
+                let value = decode_attribute(&value);
                 if value.starts_with('#') || (value.starts_with("data:image/") && attr != "href") { continue; }
                 let resolved = resolve(&base, &value);
                 if let Some(path) = resolved.as_ref().and_then(|u| paths.get(u.as_str())) {
@@ -443,7 +455,7 @@ fn rewrite_page(
                     else { el.remove_attribute(attr); }
                 } else { el.remove_attribute(attr); }
             }
-            if let Some(style) = el.get_attribute("style") { el.set_attribute("style", &rewrite_css(&style, &style_base, &style_paths))?; }
+            if let Some(style) = el.get_attribute("style") { el.set_attribute("style", &rewrite_css(&decode_attribute(&style), &style_base, &style_paths))?; }
             Ok(())
         }),
         element!("meta[charset]", |el| { el.set_attribute("charset", "utf-8")?; Ok(()) }),
@@ -459,6 +471,24 @@ fn rewrite_page(
         .into_owned())
 }
 
+// lol_html preserves source character references; the crawler's HTML5 parser
+// decodes them. Resolve attributes with the same HTML5 attribute semantics.
+fn decode_attribute(value: &str) -> String {
+    if !value.contains('&') {
+        return value.into();
+    }
+    let fragment = scraper::Html::parse_fragment(&format!(
+        "<i data-value=\"{}\"></i>",
+        value.replace('"', "&#34;")
+    ));
+    fragment
+        .select(&scraper::Selector::parse("i[data-value]").unwrap())
+        .next()
+        .and_then(|e| e.value().attr("data-value"))
+        .unwrap_or(value)
+        .into()
+}
+
 fn write_icon(path: &std::path::Path) -> Result<()> {
     std::fs::write(path, templates::ICON)?;
     Ok(())
@@ -467,6 +497,45 @@ fn write_icon(path: &std::path::Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn restores_static_animations_menus_embeds_and_entity_escaped_asset_urls() {
+        let source = http_url("https://example.test/").unwrap();
+        let paths = BTreeMap::from([
+            (
+                "https://example.test/font.css?a=1&b=2".into(),
+                "font.css".into(),
+            ),
+            ("https://example.test/about".into(), "about.html".into()),
+        ]);
+        let html = r#"<html><head><link rel="stylesheet" href="/font.css?a=1&amp;b=2"></head><body><button class="block-header__hamburger-menu">Menu</button><div class="block-header-layout-mobile__dropdown"><a href="/about">About</a></div><div class="transition transition--slide"><h1>Visible content</h1><div data-animation-role="image"></div></div><div class="video" id="movie"><img src="https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg"><button class="video__play--youtube"></button></div><script>throw 1</script></body></html>"#;
+        let output = rewrite_page(html, &source, &paths, ArchiveTemplate::Atlas).unwrap();
+        assert!(!crate::web::inspect(html, &source).text.contains("throw 1"));
+        let dynamic = rewrite_page(
+            "<html><body><div class='block-product-list' id='catalog'></div></body></html>",
+            &source,
+            &paths,
+            ArchiveTemplate::Atlas,
+        )
+        .unwrap();
+        assert!(dynamic.contains("Store catalog not captured"));
+        let doc = scraper::Html::parse_document(&output);
+        assert_eq!(
+            doc.select(&scraper::Selector::parse("link[rel=stylesheet]").unwrap())
+                .last()
+                .unwrap()
+                .value()
+                .attr("href"),
+            Some("font.css")
+        );
+        assert!(output.contains("data-animation-state=\"active\""));
+        assert!(output.contains("class=\" loaded\"") || output.contains("class=\"loaded\""));
+        assert!(output.contains("<summary>Menu</summary>"));
+        assert!(output.contains("href=\"about.html\""));
+        assert!(output.contains("https://youtu.be/abcdefghijk"));
+        assert!(output.contains("Watch video online"));
+        assert!(!output.contains("<script"));
+        assert!(!output.contains("video__play--youtube"));
+    }
     #[test]
     fn rewrites_offline_links_and_removes_active_content() {
         let paths = BTreeMap::from([

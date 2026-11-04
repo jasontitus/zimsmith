@@ -19,6 +19,7 @@ export async function captureReport(
     urls = new Set(selected.map((e) => e.url)),
     online = new Set<string>();
   const omitted = Object.entries(job.omissions || {});
+  let embeddedVideos = 0;
   const summary: CaptureSummary = {
     captured_items: selected.length,
     saved_assets: [...paths.values()].filter(Boolean).length,
@@ -38,6 +39,11 @@ export async function captureReport(
         await (await readFile(dir, entry.file)).text(),
         entry.url,
       );
+      embeddedVideos += page.embedded_videos;
+      if (page.missing_catalogs)
+        summary.warnings.push(
+          `Client-rendered store catalog not captured: ${entry.title}. Product listings require the live site.`,
+        );
       for (const url of page.links) {
         if (!urls.has(url) && !paths.get(url) && online.size < 5000)
           online.add(label(url));
@@ -53,6 +59,10 @@ export async function captureReport(
     }
   }
   summary.online_links = online.size;
+  if (embeddedVideos)
+    summary.warnings.push(
+      `${embeddedVideos} embedded YouTube videos are labeled as online links. Their thumbnails are saved; the movies were not downloaded in this website capture.`,
+    );
   const counts = Object.entries({
     "Captured items": summary.captured_items,
     "Saved assets": summary.saved_assets,

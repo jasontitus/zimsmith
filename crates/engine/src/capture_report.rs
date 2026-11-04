@@ -96,6 +96,7 @@ pub async fn write(
         ..Default::default()
     };
     let mut online = BTreeSet::new();
+    let mut embedded_videos = 0;
     let mut limited = false;
     let selector = scraper::Selector::parse("a[href]").unwrap();
     for entry in selected {
@@ -128,6 +129,14 @@ pub async fn write(
                 .unwrap_or_else(|_| entry.url.clone()),
             )?;
             let document = scraper::Html::parse_document(&html);
+            if !crate::snapshot::missing_catalogs(&document).is_empty() {
+                summary.warnings.push(format!("Client-rendered store catalog not captured: {}. Product listings require the live site.",entry.title));
+            }
+            let videos = crate::snapshot::video_links(&document);
+            embedded_videos += videos.len();
+            for url in videos.values() {
+                online.insert(label(url));
+            }
             for anchor in document.select(&selector) {
                 let Some(url) = anchor
                     .value()
@@ -148,6 +157,9 @@ pub async fn write(
         }
     }
     summary.online_links = online.len();
+    if embedded_videos > 0 {
+        summary.warnings.push(format!("{embedded_videos} embedded YouTube videos are labeled as online links. Their thumbnails are saved; the movies were not downloaded in this website capture."));
+    }
     if limited {
         summary
             .warnings

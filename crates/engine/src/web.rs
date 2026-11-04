@@ -456,7 +456,16 @@ impl<'a> Network<'a> {
         self.get_with_purpose(url, false).await
     }
     pub async fn get_asset(&mut self, url: &Url) -> Result<(Url, String, Vec<u8>)> {
-        self.get_with_purpose(url, true).await
+        let result = self.get_with_purpose(url, true).await;
+        if let Err(error) = &result {
+            if let Some(alternative) =
+                public_font_alternative(url).filter(|_| temporary_source_failure(error))
+            {
+                self.record.log("warning", "The font proxy is unavailable. Trying the same font families from Google Fonts, with its own robots and rate-limit checks.").await?;
+                return self.get_with_purpose(&alternative, true).await;
+            }
+        }
+        result
     }
     async fn get_with_purpose(&mut self, url: &Url, asset: bool) -> Result<(Url, String, Vec<u8>)> {
         let mut url = url.clone();
@@ -573,6 +582,39 @@ impl<'a> Network<'a> {
     }
 }
 
+fn temporary_source_failure(error: &anyhow::Error) -> bool {
+    let text = error.to_string();
+    static SERVER_STATUS: OnceLock<regex::Regex> = OnceLock::new();
+    SERVER_STATUS
+        .get_or_init(|| regex::Regex::new(r"(?:^|: |HTTP )(5[0-9]{2})\b").unwrap())
+        .is_match(&text)
+        || text.contains("operation timed out")
+        || error.chain().any(|e| {
+            e.downcast_ref::<reqwest::Error>()
+                .is_some_and(|e| e.is_timeout() || e.is_connect())
+        })
+}
+
+fn public_font_alternative(url: &Url) -> Option<Url> {
+    if url.host_str() != Some("cdn.zyrosite.com") || url.path() != "/u1/google-fonts/font-faces" {
+        return None;
+    }
+    let families: Vec<_> = url
+        .query_pairs()
+        .filter(|(k, _)| k == "family")
+        .map(|(_, v)| v.into_owned())
+        .collect();
+    if families.is_empty() || families.len() > 10 || families.iter().any(|f| f.len() > 256) {
+        return None;
+    }
+    let mut target = Url::parse("https://fonts.googleapis.com/css2").ok()?;
+    for family in families {
+        target.query_pairs_mut().append_pair("family", &family);
+    }
+    target.query_pairs_mut().append_pair("display", "swap");
+    Some(target)
+}
+
 pub async fn pace(url: &Url, delay: Duration) {
     let slot = host_slot(url).await;
     // Serialize grants for this origin, while allowing other origins to run.
@@ -630,6 +672,30 @@ pub struct PageData {
     pub links: Vec<String>,
     pub assets: Vec<String>,
 }
+pub fn visible_text(document: &Html) -> String {
+    document
+        .select(&Selector::parse("body").unwrap())
+        .next()
+        .into_iter()
+        .flat_map(|body| body.descendants())
+        .filter(|node| {
+            !node.ancestors().any(|parent| {
+                parent
+                    .value()
+                    .as_element()
+                    .is_some_and(|e| matches!(e.name(), "script" | "style" | "template"))
+            })
+        })
+        .filter_map(|node| node.value().as_text().map(|text| text.text.as_ref()))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(100_000)
+        .collect()
+}
 pub fn inspect(html: &str, base: &Url) -> PageData {
     let document = Html::parse_document(html);
     let select = |s: &str| Selector::parse(s).unwrap();
@@ -643,14 +709,7 @@ pub fn inspect(html: &str, base: &Url) -> PageData {
         .next()
         .map(|e| e.text().collect::<String>())
         .unwrap_or_else(|| base.path().into());
-    let text = document
-        .select(&select("body"))
-        .next()
-        .map(|e| e.text().collect::<Vec<_>>().join(" "))
-        .unwrap_or_default()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let text = visible_text(&document);
     let links = document
         .select(&select("a[href]"))
         .filter_map(|e| resolve(&base, e.value().attr("href")?))
@@ -929,6 +988,7 @@ fn needed_resources(job: &Job) -> std::collections::BTreeSet<String> {
 }
 
 pub async fn download(record: &Record) -> Result<()> {
+    repair_saved_stylesheets(record).await?;
     let mut network = Network::new(record).await?;
     let job = record.job.lock().await.clone();
     record
@@ -1059,6 +1119,46 @@ pub async fn download(record: &Record) -> Result<()> {
     Ok(())
 }
 
+/// Recompute legacy CSS references locally so resumes/rebuilds do not retain
+/// bogus URLs extracted from strings inside embedded SVGs by older versions.
+pub async fn repair_saved_stylesheets(record: &Record) -> Result<()> {
+    let snapshot = record.job.lock().await.clone();
+    let needed = needed_resources(&snapshot);
+    let mut changes = Vec::new();
+    for resource in snapshot
+        .resources
+        .values()
+        .filter(|r| r.state == "done" && r.mime.contains("text/css") && needed.contains(&r.url))
+    {
+        let path = record.dir.join("cache").join(&resource.path);
+        if tokio::fs::metadata(&path).await?.len() > 8 * 1024 * 1024 {
+            continue;
+        }
+        let css = tokio::fs::read_to_string(&path).await?;
+        let base = tokio::fs::read_to_string(
+            record
+                .dir
+                .join("cache")
+                .join(format!("{}.url", resource.path)),
+        )
+        .await
+        .unwrap_or_else(|_| resource.url.clone());
+        let dependencies = css_urls(&css, &http_url(&base)?);
+        if dependencies != resource.dependencies {
+            changes.push((resource.url.clone(), dependencies));
+        }
+    }
+    if changes.is_empty() {
+        return Ok(());
+    }
+    record.change(|job| {
+        for (url, dependencies) in changes { if let Some(resource) = job.resources.get_mut(&url) { resource.dependencies = dependencies; } }
+        let needed = needed_resources(job);
+        job.resources.retain(|url,_|needed.contains(url));
+        job.log("info","Updated saved stylesheet references locally; embedded SVG masks do not require downloads.");
+    }).await
+}
+
 fn add_resource(job: &mut Job, url: &str) {
     if job.resources.len() >= 50_000 {
         return;
@@ -1089,34 +1189,76 @@ fn add_resource(job: &mut Job, url: &str) {
 }
 
 pub fn css_urls(css: &str, base: &Url) -> Vec<String> {
-    let re =
-        regex::Regex::new(r#"(?i)url\(\s*["']?([^\s"')]+)["']?\s*\)|@import\s+["']([^"']+)["']"#)
-            .unwrap();
-    re.captures_iter(css)
-        .filter_map(|c| resolve(base, c.get(1).or_else(|| c.get(2))?.as_str()))
+    crate::css::references(css)
+        .into_iter()
+        .filter(|r| !crate::css::local(&r.value))
+        .filter_map(|r| resolve(base, &r.value))
         .map(|u| u.to_string())
         .collect()
 }
 
 pub fn rewrite_css(css: &str, base: &Url, paths: &BTreeMap<String, String>) -> String {
-    let re =
-        regex::Regex::new(r#"(?i)url\(\s*["']?([^\s"')]+)["']?\s*\)|@import\s+["']([^"']+)["']"#)
-            .unwrap();
-    re.replace_all(css, |c: &regex::Captures| {
-        let raw = c.get(1).or_else(|| c.get(2)).unwrap().as_str();
-        let mapped = resolve(base, raw).and_then(|u| paths.get(u.as_str()).cloned());
-        match mapped {
-            Some(path) if c.get(1).is_some() => format!("url(\"{path}\")"),
-            Some(path) => format!("@import \"{path}\""),
-            None => c[0].into(),
+    let mut out = css.to_string();
+    for reference in crate::css::references(css).into_iter().rev() {
+        if crate::css::local(&reference.value) {
+            continue;
         }
-    })
-    .into_owned()
+        let Some(path) =
+            resolve(base, &reference.value).and_then(|u| paths.get(u.as_str()).cloned())
+        else {
+            continue;
+        };
+        let fragment = base
+            .join(&reference.value)
+            .ok()
+            .and_then(|u| u.fragment().map(|f| format!("#{f}")))
+            .unwrap_or_default();
+        let value = format!("{path}{fragment}");
+        let replacement = if reference.import {
+            format!("\"{value}\"")
+        } else {
+            format!("url(\"{value}\")")
+        };
+        out.replace_range(reference.start..reference.end, &replacement);
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn font_proxy_recovery_is_narrow_and_does_not_override_denials_or_rate_limits() {
+        let url=http_url("https://cdn.zyrosite.com/u1/google-fonts/font-faces?family=Inter:wght@400&family=Mukta:wght@400").unwrap();
+        let target = public_font_alternative(&url).unwrap();
+        assert_eq!(target.host_str(), Some("fonts.googleapis.com"));
+        assert_eq!(
+            target.query_pairs().filter(|(k, _)| k == "family").count(),
+            2
+        );
+        assert!(public_font_alternative(
+            &http_url(
+                "https://cdn.zyrosite.com.example.test/u1/google-fonts/font-faces?family=Inter"
+            )
+            .unwrap()
+        )
+        .is_none());
+        for message in [
+            "429 Too Many Requests after 5 attempts",
+            "Blocked by robots.txt",
+            "HTTP 403 Forbidden",
+            "Download budget reached",
+        ] {
+            assert!(!temporary_source_failure(&anyhow::anyhow!(message)));
+        }
+        for message in [
+            "522 after 1 attempt",
+            "Cannot safely read robots.txt: 503 after 1 attempt",
+            "operation timed out",
+        ] {
+            assert!(temporary_source_failure(&anyhow::anyhow!(message)));
+        }
+    }
     #[tokio::test]
     async fn robots_failure_is_bounded_and_cached_across_networks_and_expiry_allows_retry() {
         use axum::{response::IntoResponse, routing::get, Router};

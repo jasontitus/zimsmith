@@ -1,4 +1,7 @@
 import { linkedAsset } from "../capture";
+import { staticPresentation } from "./snapshot";
+export { rewriteCss } from "./css";
+import { rewriteCss } from "./css";
 import { DOMParser } from "linkedom/worker";
 import templateData from "./templates.json";
 import css from "../../crates/engine/assets/archive.css?raw";
@@ -44,6 +47,7 @@ export function clean(document: Document) {
 }
 export function discover(html: string, source: string) {
   const document = parse(html);
+  staticPresentation(document);
   clean(document);
   const links = Array.from(document.querySelectorAll("a[href]"), (a) =>
     resolveUrl(a.getAttribute("href")!, source),
@@ -61,6 +65,8 @@ export function discover(html: string, source: string) {
       .trim()
       .slice(0, 50000),
     links,
+    embedded_videos: document.querySelectorAll(".zim-online-video").length,
+    missing_catalogs: document.querySelectorAll(".zim-missing-content").length,
   };
 }
 
@@ -71,6 +77,7 @@ export async function rewritePage(
   asset: (url: string) => Promise<string>,
 ) {
   const document = parse(html);
+  staticPresentation(document);
   clean(document);
   const selected = new Map(
     job.entries.filter((e) => e.selected).map((e) => [e.url, `${e.id}.html`]),
@@ -113,7 +120,14 @@ export async function rewritePage(
       element.tagName.toLowerCase() === "style"
         ? element.textContent || ""
         : element.getAttribute("style") || "";
-    const rewritten = await rewriteCss(value, entry.url, load);
+    const rewritten = await rewriteCss(
+      value,
+      entry.url,
+      load,
+      element.tagName.toLowerCase() === "style"
+        ? "stylesheet"
+        : "declarationList",
+    );
     if (element.tagName.toLowerCase() === "style")
       element.textContent = rewritten;
     else element.setAttribute("style", rewritten);
@@ -137,30 +151,6 @@ export async function rewritePage(
     : `<a href="index.html">← Collection contents</a><span>Saved for offline reading</span><a href="${escape(entry.url)}" rel="noopener noreferrer">Original source ↗</a>`;
   document.body.prepend(nav);
   return "<!doctype html>" + document.documentElement.outerHTML;
-}
-export async function rewriteCss(
-  css: string,
-  base: string,
-  asset: (url: string) => Promise<string>,
-) {
-  // Bound recursion in the caller, and never leave a network URL in saved CSS.
-  const matches = [
-    ...css.matchAll(
-      /url\(\s*(['"]?)([^)'"\s]+)\1\s*\)|@import\s+(['"])([^'"]+)\3/gi,
-    ),
-  ];
-  for (const match of matches.reverse()) {
-    const value = match[2] || match[4];
-    if (value.startsWith("data:") || value.startsWith("#")) continue;
-    const url = resolveUrl(value, base),
-      saved = url ? await asset(url) : "";
-    const replacement = match[2] ? `url("${saved}")` : `@import "${saved}"`;
-    css =
-      css.slice(0, match.index) +
-      replacement +
-      css.slice(match.index! + match[0].length);
-  }
-  return css;
 }
 interface CatalogDocument {
   title: string;

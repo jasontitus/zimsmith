@@ -1,0 +1,5 @@
+Fix blank server-rendered pages caused by script-dependent reveal animations, provide working offline mobile menus, and correctly rewrite HTML-escaped asset URLs.
+
+Preserve embedded SVG data URLs and fragment references, repair legacy cached stylesheet dependencies, and recover recognized public font proxies through Google Fonts with robots/rate limits intact.
+
+Remove script code from search excerpts. Clearly label online-only YouTube embeds and uncaptured JavaScript store catalogs. Rebuild saved content to apply static-page repairs; client-rendered catalogs still require the live site.
