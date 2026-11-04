@@ -31,3 +31,9 @@ Media and archive payloads stream to browser storage with bounded buffers; the w
 ```sh
 npm run test:browser
 ```
+
+## Local imports and collection refresh
+
+Browser and extension workspaces also import saved HTML/media files, folders, ZIPs, and website URL lists. File imports remain entirely local and can work without source-site CORS access; missing resources are disclosed instead of fetched. ZIP decoding uses native browser decompression streams, so use a current browser; directory pickers vary by device, with ZIP as the fallback. Uploads use bounded chunks and can continue after reselecting matching files. Failed attempts can be deleted, including their private cached data.
+
+Completed website collections can be refreshed with forced change review. URL rules, asset switches, download budgets, capture reports, and automatic checksum/directory-table validation are available. Native YouTube extraction, captions, and other provider-specific behavior are not ported to the browser engine; imported HTML can retain its already-saved subtitle tracks.

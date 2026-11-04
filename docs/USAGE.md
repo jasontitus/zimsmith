@@ -59,3 +59,21 @@ Progress shows the actual request, including robots.txt checks. Each robots.txt 
 For a paused or failed website download, **Build with available files** packages all selected cached pages and saved assets without more requests. Missing images, styles, or fonts are disclosed on the archive home page and in its capture report. Resume instead if you want to retry the missing downloads.
 
 Open a failed attempt in **Activity**, choose **Delete failed attempt**, then confirm. This removes its activity entry and internal downloads, including any internal ZIM. Copies you previously exported remain in Files or Downloads. Running and paused jobs cannot be deleted through this action.
+
+### Refresh and capture controls
+
+In a completed collection’s **Details**, choose **Check for changes**. Review new/changed/unchanged/unavailable items and anything not seen in the new scan. Incomplete scans do not prove removal. Confirm the new selection to build a revision; exported copies remain unchanged. Website assets are revalidated during download. YouTube refresh reuses matching saved video/audio and captions. Other providers and mutable direct-file URLs may download again.
+
+Under **Crawl & archive settings**, configure include/exclude URL globs, source asset types, a total download budget, and video quality. `*` matches any text; `?` matches one character. Rules beginning with `/` match paths, others match full URLs. Includes apply to pages; excludes apply to pages and assets. The starting page can be scanned for discovery even if not included. Budget counters survive Resume and restart for a refresh. Allow extra disk space for cached files and the output ZIM. Quality presets cap YouTube/yt-dlp resolution at 360p, 720p, or 1080p; direct files keep their original quality.
+
+### Subtitles and saved-content imports
+
+Native YouTube jobs save available captions in the original audio language by default. Choose a subtitle language (for example `en` or `pt-BR`) and whether to allow auto captions. Audio selection stays original. Captions appear in the player, detail-page transcript search, and timestamp links from collection search. Unavailable captions are reported while retaining the video. Portable collection search has a memory budget; its report discloses limits, and full per-video transcripts remain searchable on their detail pages.
+
+On **Create**, expand **Import saved content or a URL list**. Choose files/a folder/ZIP, review the file count and size, then **Import & review**. Select the discovered items and build. Include a saved HTML page’s asset folder, or ZIP them together; ZIPs are the fallback when a device cannot select directories. Imports support stored/deflate ZIPs, with up to 50,000 files, 20 GB expanded total (or a smaller configured budget), per-file limits, 8 MB HTML and 2 MB CSS parsing limits. Encrypted archives, symbolic links, unsafe paths, and overlapping names are rejected. No missing file is fetched online. After interruption, open the attempt and **Reselect files to continue**; matching uploaded bytes are reused.
+
+For a website URL list, paste one starting URL per line (or choose a `.txt`/`.urls` file). A single job scans within each URL’s scope. Normal review, item/depth limits, pacing, and budget apply. Media collections should use a playlist/channel/search URL.
+
+### Capture and validation report
+
+Completed details show captured items, saved/omitted/excluded assets, links outside the archive, and caption gaps. The ZIM’s **Capture report** gives full results in HTML and JSON. Possible empty/blocked pages are flagged for inspection. Checksum and directory checks run before the app marks a new archive ready. A validation pass does not guarantee every original page or video renders correctly. Progress also calls out prolonged inactivity; pause/resume retries from saved checkpoints.

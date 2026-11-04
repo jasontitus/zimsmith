@@ -208,6 +208,11 @@ pub async fn scan(record: &Record) -> Result<()> {
                 .collect(),
             assets: vec![],
             media_file: None,
+            subtitles: vec![],
+            transcript: vec![],
+            transcript_file: None,
+            subtitle_policy: None,
+            subtitle_error: None,
             media_audio: None,
             thumbnail_url: value
                 .get("thumbnail")
@@ -271,7 +276,8 @@ pub async fn download(record: &Record) -> Result<()> {
             Ok(()) => return Ok(()),
             Err(error)
                 if cfg!(any(target_os = "ios", target_os = "android"))
-                    || error.is::<crate::youtube_audio::OriginalAudioUnavailable>() =>
+                    || error.is::<crate::youtube_audio::OriginalAudioUnavailable>()
+                    || error.is::<crate::capture::BudgetReached>() =>
             {
                 return Err(error)
             }
@@ -316,6 +322,19 @@ pub async fn download(record: &Record) -> Result<()> {
             .log("info", format!("Downloading {}", entry.title))
             .await?;
         let result: Result<(String, u64)> = async {
+            let remaining = record.remaining_download().await.unwrap_or(u64::MAX);
+            let cap = remaining.min(snapshot.config.max_resource_mb * 1024 * 1024);
+            anyhow::ensure!(cap > 0, crate::capture::BudgetReached);
+            let format = format!(
+                "best[ext=mp4][height<={}]/best[height<={}]",
+                snapshot.config.capture.video_quality.height(),
+                snapshot.config.capture.video_quality.height()
+            );
+            let suffix = if snapshot.archive_revision == 0 {
+                String::new()
+            } else {
+                format!("-r{}", snapshot.archive_revision)
+            };
             let out = tokio::time::timeout(
                 Duration::from_secs(12 * 3600),
                 command(snapshot.config.delay_ms)
@@ -327,12 +346,12 @@ pub async fn download(record: &Record) -> Result<()> {
                         "--format-sort",
                         "lang",
                         "--format",
-                        "best[ext=mp4]/best",
+                        &format,
                         "--max-filesize",
                     ])
-                    .arg(format!("{}M", snapshot.config.max_resource_mb))
+                    .arg(cap.to_string())
                     .args(["--print", "after_move:filepath", "--output"])
-                    .arg(media_dir.join(format!("{}-ytdlp-v2.%(ext)s", entry.id)))
+                    .arg(media_dir.join(format!("{}-ytdlp-v2{suffix}.%(ext)s", entry.id)))
                     .arg("--")
                     .arg(&entry.url)
                     .output(),
@@ -357,6 +376,7 @@ pub async fn download(record: &Record) -> Result<()> {
                 size <= snapshot.config.max_resource_mb * 1024 * 1024,
                 "Media exceeds the configured size limit"
             );
+            record.consume_download(size).await?;
             let filename = canonical
                 .file_name()
                 .context("Missing media filename")?

@@ -82,6 +82,14 @@
     current.preload = "metadata";
     current.setAttribute("aria-label", button.dataset.playTitle);
     current.src = button.dataset.playSrc;
+    const catalog = JSON.parse(document.getElementById("catalog")?.textContent || "{}");
+    const item = catalog.documents?.[Number(button.closest("[data-document]")?.dataset.document)];
+    for (const [index, subtitle] of (item?.subtitles || []).entries()) {
+      const track = document.createElement("track");
+      track.kind = "subtitles"; track.src = subtitle.file; track.srclang = subtitle.language;
+      track.label = subtitle.label; track.default = index === 0;
+      current.append(track);
+    }
     content.append(current);
     current.addEventListener("error", () => {
       if (media === current)

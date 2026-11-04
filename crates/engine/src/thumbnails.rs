@@ -179,6 +179,7 @@ mod tests {
                 description: "Offline video collection".into(),
                 creator: "Test".into(),
                 include_assets: false,
+                capture: Default::default(),
             })
             .await
             .unwrap();

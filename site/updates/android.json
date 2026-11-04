@@ -4,15 +4,15 @@
   "channel": "direct",
   "releases": [
     {
-      "version": "0.1.7",
-      "version_code": 1007,
+      "version": "0.2.0",
+      "version_code": 2000,
       "abi": "arm64-v8a",
       "min_sdk": 24,
-      "url": "https://github.com/jasontitus/zimsmith/releases/download/v0.1.7/Zimsmith-0.1.7-arm64-v8a-71cb2774bd0b.apk",
-      "sha256": "71cb2774bd0baa297fbbd5b965ed1d95c4aa5f9ebd38004b792343a78f134f15",
+      "url": "https://github.com/jasontitus/zimsmith/releases/download/v0.2.0/Zimsmith-0.2.0-arm64-v8a-f58e56677be7.apk",
+      "sha256": "f58e56677be784ce53029410e649d34622f0eb1b12cd96ab88d9d3fbfa3408f0",
       "certificate_sha256": "f05a21df94164c0695b4e422bb413e2b7e5971ef44ecab3e2666faacb287aa89",
-      "size_bytes": 38283917,
-      "notes": "Delete failed attempts from Activity with confirmation; exported ZIM copies are preserved.\n\nWebsite recovery can build all selected pages with available files and disclose missing assets inside the ZIM. Robots.txt checks now have a 15-second request timeout and saved retry checkpoints, so unavailable CDNs do not restart long retry loops on Resume. Progress identifies the actual request. Server cooldowns and robots exclusions remain enforced."
+      "size_bytes": 39836301,
+      "notes": "Refresh existing collections with change review, saved YouTube track reuse, and conditional asset revalidation.\n\nControl URL scope, source asset types, total download budgets, and video quality (360p/720p/1080p). Original audio remains the default.\n\nSave available YouTube subtitles, search transcripts, and open playback timestamps. Full transcripts stay in per-video files; portable collection search has a disclosed memory budget.\n\nImport saved HTML, media, folders, ZIPs, and website URL lists. Local imports do not fetch missing resources; chunked uploads can resume after reselecting files.\n\nEvery new ZIM includes a capture report. Checksum and directory validation run before a replacement archive is marked ready. Failed attempts can be deleted, including cached files."
     }
   ]
 }

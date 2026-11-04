@@ -1,3 +1,4 @@
+import { validateCapture } from "../capture";
 import type { Config, Entry, Job } from "../types";
 
 export interface Receipt {
@@ -5,6 +6,8 @@ export interface Receipt {
   mime: string;
   size: number;
   etag?: string;
+  last_modified?: string;
+  revalidate?: boolean;
   total?: number;
   done: boolean;
 }
@@ -21,6 +24,13 @@ export interface BrowserJob extends Omit<Job, "entries"> {
   visited: string[];
   resources: Record<string, Receipt>;
   output_file?: string;
+  omissions?: Record<string, string>;
+  refresh?:
+    | (NonNullable<Job["refresh"]> & {
+        previous: BrowserEntry[];
+        fingerprints: Record<string, string>;
+      })
+    | null;
 }
 export const now = () => Math.floor(Date.now() / 1000);
 export const defaults = {
@@ -29,6 +39,7 @@ export const defaults = {
   archive_template: "atlas" as const,
 };
 export function validate(config: Config) {
+  validateCapture(config);
   const url = new URL(config.url);
   if (
     !["http:", "https:"].includes(url.protocol) ||

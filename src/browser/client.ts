@@ -96,6 +96,10 @@ export const browserApi = {
     await permit();
     return call<Job>("rebuild_job", { id, template });
   },
+  refresh: async (id: string) => {
+    await permit();
+    return call<Job>("refresh_job", { id });
+  },
   open: async (_id: string): Promise<void> => {
     throw new Error("Save the ZIM and open it with your installed ZIM viewer.");
   },
@@ -113,3 +117,5 @@ export const browserApi = {
     return "Download started. Check your browser's Downloads folder.";
   },
 };
+
+export { call as browserCommand };

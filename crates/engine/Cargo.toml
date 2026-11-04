@@ -18,6 +18,7 @@ uuid.workspace = true
 url = "2"
 scraper = "0.22"
 lol_html = "2"
+md-5 = "0.10.6"
 sha2 = "0.10"
 regex = "1"
 httpdate = "1"
@@ -28,6 +29,7 @@ zimru = { path = "../../vendor/zimru" }
 xapianbuilder = { git = "https://github.com/jasontitus/xapianbuilder", rev = "13ff368991850f35ecb2e60037c6385d9992cbdc", optional = true }
 # Pinned TeamPiped fork snapshot; see vendor/rustypipe/ZIM-STUDIO.md.
 rustypipe = { path = "../../vendor/rustypipe", default-features = false, features = ["rustls-tls-webpki-roots"] }
+zip = { version = "=9.3.0", default-features = false, features = ["deflate"] }
 mime_guess = "2"
 base64 = "0.22"
 mp4-track = "=0.1.0"

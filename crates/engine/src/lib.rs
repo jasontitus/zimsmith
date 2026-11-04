@@ -1,8 +1,13 @@
 mod archive;
+pub mod captions;
+pub mod capture;
+pub mod capture_report;
+pub mod imports;
 mod media;
 pub mod model;
 mod mux;
 mod native_media;
+pub mod refresh;
 mod robots_cache;
 pub mod templates;
 mod thumbnails;
@@ -26,6 +31,7 @@ pub struct Record {
     pub job: Mutex<Job>,
     pub stop: Notify,
     pub running: AtomicBool,
+    pub import_cancel: AtomicBool,
     pub dir: PathBuf,
 }
 
@@ -112,7 +118,15 @@ impl Engine {
             let data = tokio::fs::read(&path).await?;
             let mut job: Job = serde_json::from_slice(&data)
                 .with_context(|| format!("Could not recover {}", path.display()))?;
-            if ["scanning", "downloading", "packaging", "pausing"].contains(&job.status.as_str()) {
+            if [
+                "scanning",
+                "downloading",
+                "packaging",
+                "pausing",
+                "importing",
+            ]
+            .contains(&job.status.as_str())
+            {
                 job.status = "paused".into();
                 job.log(
                     "warning",
@@ -123,6 +137,7 @@ impl Engine {
                 job: Mutex::new(job.clone()),
                 stop: Notify::new(),
                 running: AtomicBool::new(false),
+                import_cancel: AtomicBool::new(false),
                 dir: dir.path(),
             });
             record.save(&job).await?;
@@ -164,21 +179,27 @@ impl Engine {
         *current = settings.clone();
         Ok(settings)
     }
-    pub async fn create(&self, mut config: NewJob) -> Result<Job> {
+    pub async fn create(&self, config: NewJob) -> Result<Job> {
+        self.create_record(config, true).await
+    }
+    pub(crate) async fn create_record(&self, mut config: NewJob, start: bool) -> Result<Job> {
         config.url = web::source_url(&config.url)?.to_string();
+        config.capture.seed_urls = config
+            .capture
+            .seed_urls
+            .iter()
+            .map(|s| web::source_url(s).map(|u| u.to_string()))
+            .collect::<Result<Vec<_>>>()?;
         let detected_media = config.detect_media_source();
         config.validate()?;
         let settings = self.settings().await;
         let id = uuid::Uuid::new_v4().to_string();
         let mut job = Job {
             id: id.clone(),
-            queue: vec![PendingPage {
-                url: config.url.clone(),
-                depth: 0,
-            }],
+            queue: config.starting_pages(),
             config,
-            status: "scanning".into(),
-            phase: "scan".into(),
+            status: if start { "scanning" } else { "importing" }.into(),
+            phase: if start { "scan" } else { "import" }.into(),
             auto_start_item_limit: settings
                 .auto_start_small_jobs
                 .then_some(settings.auto_start_item_limit),
@@ -191,6 +212,10 @@ impl Engine {
             visited: vec![],
             resources: Default::default(),
             asset_summary: None,
+            refresh: None,
+            import: None,
+            capture_report: None,
+            validation: None,
             logs: vec![],
             error: None,
             output: None,
@@ -198,6 +223,7 @@ impl Engine {
             retry_at: None,
             requests: 0,
             bytes: 0,
+            downloaded_bytes: 0,
             progress: Progress::default(),
         };
         if detected_media {
@@ -212,11 +238,14 @@ impl Engine {
             job: Mutex::new(job.clone()),
             stop: Notify::new(),
             running: AtomicBool::new(false),
+            import_cancel: AtomicBool::new(false),
             dir,
         });
         record.save(&job).await?;
         self.jobs.write().await.insert(id, record.clone());
-        self.launch(record)?;
+        if start {
+            self.launch(record)?;
+        }
         Ok(job)
     }
     fn launch(&self, record: Arc<Record>) -> Result<()> {
@@ -267,6 +296,14 @@ impl Engine {
         let record = self.record(id).await?;
         {
             let mut job = record.job.lock().await;
+            if job.status == "importing"
+                && job.import.as_ref().is_some_and(|import| !import.finished)
+            {
+                job.status = "paused".into();
+                record.import_cancel.store(true, Ordering::SeqCst);
+                record.save(&job).await?;
+                return Ok(job.clone());
+            }
             anyhow::ensure!(
                 ["scanning", "downloading", "packaging"].contains(&job.status.as_str()),
                 "This job is not running"
@@ -289,6 +326,10 @@ impl Engine {
                 ["paused", "failed"].contains(&job.status.as_str()),
                 "Only paused or failed jobs can resume"
             );
+            anyhow::ensure!(
+                !job.import.as_ref().is_some_and(|s| !s.finished),
+                "Reselect the same saved files in Import to continue this upload"
+            );
             job.prepare_resume();
             record.save(&job).await?;
         }
@@ -297,6 +338,12 @@ impl Engine {
     }
     pub async fn edit_retry(&self, id: &str, mut config: NewJob) -> Result<Job> {
         config.url = web::source_url(&config.url)?.to_string();
+        config.capture.seed_urls = config
+            .capture
+            .seed_urls
+            .iter()
+            .map(|s| web::source_url(s).map(|u| u.to_string()))
+            .collect::<Result<Vec<_>>>()?;
         config.detect_media_source();
         config.validate()?;
         let record = self.record(id).await?;
@@ -310,13 +357,35 @@ impl Engine {
                 ["failed", "paused"].contains(&current.status.as_str()),
                 "Pause the crawl or wait for it to fail before editing"
             );
+            anyhow::ensure!(
+                current.import.is_none(),
+                "Use Rebuild ZIM for imported files, or begin a new import"
+            );
             let source_changed =
                 config.url != current.config.url || config.kind != current.config.kind;
             let rescan = source_changed
                 || config.max_items != current.config.max_items
                 || config.max_depth != current.config.max_depth
-                || config.include_assets != current.config.include_assets;
+                || config.include_assets != current.config.include_assets
+                || config.capture.seed_urls != current.config.capture.seed_urls
+                || config.capture.include_urls != current.config.capture.include_urls
+                || config.capture.exclude_urls != current.config.capture.exclude_urls;
             let mut job = current.clone();
+            if config.capture.video_quality != current.config.capture.video_quality
+                && config.kind == SourceKind::Media
+            {
+                for entry in job.entries.iter_mut().filter(|e| e.selected) {
+                    entry.state = "pending".into();
+                }
+                job.phase = "download".into();
+            }
+            if config.kind == SourceKind::Media
+                && (config.capture.subtitles != current.config.capture.subtitles
+                    || config.capture.subtitle_language != current.config.capture.subtitle_language
+                    || config.capture.auto_captions != current.config.capture.auto_captions)
+            {
+                job.phase = "download".into();
+            }
             job.config = config;
             if job.output.is_some() {
                 job.archive_revision = job
@@ -342,10 +411,7 @@ impl Engine {
                 }
                 job.entries.clear();
                 job.visited.clear();
-                job.queue = vec![PendingPage {
-                    url: job.config.url.clone(),
-                    depth: 0,
-                }];
+                job.queue = job.config.starting_pages();
                 job.scan_truncated = false;
                 job.phase = "scan".into();
                 job.progress = Progress::default();
@@ -400,8 +466,9 @@ impl Engine {
                     r.error = None;
                 }
             }
-            job.phase = "download".into();
-            job.status = "downloading".into();
+            let imported = job.import.is_some();
+            job.phase = if imported { "package" } else { "download" }.into();
+            job.status = if imported { "packaging" } else { "downloading" }.into();
             job.error = None;
             job.log(
                 "info",
@@ -467,7 +534,7 @@ impl Engine {
             {
                 resource.state = "failed".into();
             }
-            if resource.state != "done" {
+            if resource.state != "done" && resource.state != "excluded" {
                 resource.state = "skipped".into();
             }
         }
@@ -491,7 +558,6 @@ impl Engine {
         next.phase = "package".into();
         next.status = "packaging".into();
         next.error = None;
-        next.retry_at = None;
         next.log("warning", "Building with available files by request. Missing assets will be listed in the archive capture report. No further downloads.");
         record.save(&next).await?;
         *current = next;
@@ -545,7 +611,11 @@ impl Engine {
                 "All selected items must be downloaded before rebuilding"
             );
             for entry in selected {
-                let files = match job.config.kind {
+                let files = match if entry.media_file.is_some() {
+                    SourceKind::Media
+                } else {
+                    job.config.kind.clone()
+                } {
                     SourceKind::Website => {
                         vec![record.dir.join("cache").join(format!("{}.html", entry.id))]
                     }
@@ -617,6 +687,7 @@ async fn drive(record: &Record) -> Result<()> {
             SourceKind::Website => web::scan(record).await?,
             SourceKind::Media => media::scan(record).await?,
         }
+        refresh::compare(record).await?;
         record
             .change(|j| {
                 if j.can_auto_start() {

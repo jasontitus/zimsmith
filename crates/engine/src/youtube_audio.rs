@@ -1,5 +1,5 @@
 //! Original-audio selection for YouTube. Archive language is metadata, not a dub preference.
-use anyhow::{Context, Result};
+use anyhow::Result;
 use rustypipe::model::{
     AudioCodec, AudioStream, AudioTrackType, VideoCodec, VideoPlayer, VideoStream,
 };
@@ -102,38 +102,53 @@ impl Selection<'_> {
 }
 
 pub fn select(player: &VideoPlayer) -> Result<Selection<'_>> {
+    select_with_height(player, 720)
+}
+
+pub fn select_with_height(player: &VideoPlayer, max_height: u32) -> Result<Selection<'_>> {
     anyhow::ensure!(
         player.drm.is_none() && !player.details.is_live,
         "Protected and live streams are not supported"
     );
-    let quality = |s: &&VideoStream| (s.height <= 720, s.codec == VideoCodec::Avc1, s.height);
+    let playable = |s: &&VideoStream| {
+        s.drm_track_type.is_none()
+            && s.height <= max_height
+            && s.mime.contains("mp4")
+            && s.codec == VideoCodec::Avc1
+    };
     let combined = player
         .video_streams
         .iter()
-        .filter(|s| s.drm_track_type.is_none())
-        .max_by_key(quality);
+        .filter(playable)
+        .max_by_key(|s| (s.height, s.fps));
+    let separate = player
+        .video_only_streams
+        .iter()
+        .filter(playable)
+        .max_by_key(|s| (s.height, s.fps));
     let named_audio = player
         .audio_streams
         .iter()
         .any(|s| s.drm_track_type.is_none() && s.track.is_some());
-    if !named_audio {
-        if let Some(video) = combined {
-            return Ok(Selection { video, audio: None });
-        }
+    if !named_audio
+        && combined.is_some_and(|c| {
+            player.audio_streams.is_empty() || separate.is_none_or(|s| c.height >= s.height)
+        })
+    {
+        return Ok(Selection {
+            video: combined.unwrap(),
+            audio: None,
+        });
     }
     let audio = select_audio(&player.audio_streams)?;
-    // A saved combined MP4 can supply its video track. The muxer explicitly
-    // discards its embedded audio and uses the selected original audio input.
-    let video = combined
-        .filter(|s| s.mime.contains("mp4"))
-        .or_else(|| {
-            player
-                .video_only_streams
-                .iter()
-                .filter(|s| s.drm_track_type.is_none() && s.mime.contains("mp4"))
-                .max_by_key(quality)
-        })
-        .context("No MP4 video stream is available to pair with the original audio")?;
+    // Prefer a combined stream on equal resolution; its embedded audio is
+    // discarded when an explicit original audio track is provided.
+    let video = match (combined, separate) {
+        (Some(c), Some(s)) => if c.height >= s.height { c } else { s },
+        (Some(c), None) => c,
+        (None, Some(s)) => s,
+        _ => anyhow::bail!("No compatible MP4/H.264 video is available at or below {max_height}p. Choose a higher quality preset."),
+    };
     Ok(Selection {
         video,
         audio: Some(audio),
@@ -161,6 +176,30 @@ mod tests {
         serde_json::from_value(json!({"details":{"id":"fixture1234","name":"Fixture","description":null,"duration":1,"thumbnail":[],"channel_id":"fixture","channel_name":null,"view_count":null,"keywords":[],"is_live":false,"is_live_content":false},
             "video_streams":if combined {vec![video.clone()]}else{vec![]},"video_only_streams":[video],"audio_streams":audio,"subtitles":[],"expires_in_seconds":1000,"valid_until":"2030-01-01T00:00:00Z","hls_manifest_url":null,"dash_manifest_url":null,"preview_frames":[],"drm":null,"client_type":"vision_os","visitor_data":null})).unwrap()
     }
+    #[test]
+    fn quality_caps_choose_the_best_compatible_video_and_keep_original_audio() {
+        let mut p = player(
+            vec![
+                audio("en.4", Some("original"), false, 128000, "mp4a"),
+                audio("ja.10", Some("dubbed-auto"), true, 140000, "mp4a"),
+            ],
+            true,
+        );
+        let mut hd = p.video_only_streams[0].clone();
+        hd.height = 720;
+        hd.itag = 136;
+        let mut full_hd = hd.clone();
+        full_hd.height = 1080;
+        full_hd.itag = 137;
+        p.video_only_streams.extend([hd, full_hd]);
+        for cap in [360, 720, 1080] {
+            let selected = select_with_height(&p, cap).unwrap();
+            assert_eq!(selected.video.height, cap);
+            assert_eq!(selected.audio.unwrap().track.as_ref().unwrap().id, "en.4");
+        }
+        assert!(select_with_height(&p, 144).is_err());
+    }
+
     #[test]
     fn original_wins_over_higher_bitrate_dubs_defaults_and_order() {
         let streams = vec![

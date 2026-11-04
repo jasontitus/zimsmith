@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const ICON: &[u8] = include_bytes!("../assets/zimsmith-icon-48.png");
 pub const CSS: &str = include_str!("../assets/archive.css");
 pub const GALLERY_JS: &str = include_str!("../assets/gallery.js");
+pub const MEDIA_JS: &str = include_str!("../assets/media.js");
 pub const SEARCH_JS: &str = include_str!("../assets/search.js");
 pub const SANS: &[u8] = include_bytes!("../assets/fonts/dm-sans.woff2");
 pub const DISPLAY: &[u8] = include_bytes!("../assets/fonts/manrope.woff2");
@@ -54,28 +55,75 @@ pub struct Document {
     pub detail: String,
     pub thumbnail: Option<String>,
     pub media: Option<String>,
+    pub subtitles: Vec<crate::captions::SavedSubtitle>,
+    pub cues: Vec<crate::captions::Cue>,
 }
 
 #[derive(Default, Serialize)]
 pub struct SearchCatalog {
     pub omitted_assets: usize,
+    pub capture_report: bool,
+    pub search_limited: bool,
+    #[serde(skip)]
+    indexed_bytes: usize,
+    #[serde(skip)]
+    postings: usize,
     pub documents: Vec<Document>,
     pub index: BTreeMap<String, Vec<usize>>,
 }
 
 impl SearchCatalog {
     pub fn add(&mut self, entry: &Entry, kind: &SourceKind) {
-        let tokens: BTreeSet<_> = format!("{} {}", entry.title, entry.text)
+        // Bound portable search separately from media size. Full transcripts
+        // remain on each detail page even when the collection-wide index fills.
+        let remaining = (16usize * 1024 * 1024).saturating_sub(self.indexed_bytes);
+        let body: String = entry
+            .text
+            .chars()
+            .take(100_000)
+            .scan(0usize, |bytes, ch| {
+                *bytes += ch.len_utf8();
+                (*bytes <= remaining).then_some(ch)
+            })
+            .collect();
+        self.indexed_bytes += body.len();
+        self.search_limited |= body.len() < entry.text.len();
+        let mut cues = Vec::new();
+        for cue in &entry.transcript {
+            if self.indexed_bytes.saturating_add(cue.text.len()) > 16 * 1024 * 1024
+                || self.postings >= 800_000
+            {
+                self.search_limited = true;
+                break;
+            }
+            self.indexed_bytes += cue.text.len();
+            cues.push(cue.clone());
+        }
+        let text = format!(
+            "{} {} {}",
+            entry.title,
+            body,
+            cues.iter()
+                .map(|cue| cue.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        let tokens: BTreeSet<_> = text
             .to_lowercase()
             .split(|c: char| !c.is_alphanumeric())
             .filter(|s| !s.is_empty())
             .map(str::to_string)
             .collect();
         for token in tokens {
+            if self.postings >= 1_000_000 {
+                self.search_limited = true;
+                break;
+            }
             self.index
                 .entry(token)
                 .or_default()
                 .push(self.documents.len());
+            self.postings += 1;
         }
         let text = entry.text.split_whitespace().collect::<Vec<_>>().join(" ");
         let mut excerpt: String = text.chars().take(160).collect();
@@ -114,6 +162,8 @@ impl SearchCatalog {
             format!("{} min read", words.div_ceil(220).max(1))
         };
         self.documents.push(Document {
+            subtitles: entry.subtitles.clone(),
+            cues,
             thumbnail: entry.thumbnail_file.clone(),
             media: media.then(|| entry.media_file.clone()).flatten(),
             title: entry.title.clone(),
@@ -227,7 +277,17 @@ pub fn render_index(
         .replace('<', "\\u003c")
         .replace('>', "\\u003e")
         .replace('&', "\\u0026");
-    let source = if preview { "#collection" } else { &config.url };
+    let imported = config.url.starts_with("https://local-import.invalid/");
+    let source = if preview || imported {
+        "#collection"
+    } else {
+        &config.url
+    };
+    let source_label = if imported {
+        "Imported saved files"
+    } else {
+        "Visit original source"
+    };
     let sample = if preview {
         "<span class='preview-label'>Sample collection · style preview</span>"
     } else {
@@ -267,6 +327,16 @@ pub fn render_index(
         } else {
             "Something worth keeping."
         };
+    let report_link = if catalog.capture_report {
+        "<span><a href='capture-report.html'>Capture report</a></span>"
+    } else {
+        ""
+    };
+    let search_notice = if catalog.search_limited {
+        "<aside class='archive-noscript'><strong>Portable search reached its memory budget.</strong> Some text is not in collection-wide search. Open an item to read or search its full saved transcript.</aside>"
+    } else {
+        ""
+    };
     let capture_notice = if catalog.omitted_assets > 0 {
         format!("<aside class='archive-noscript' aria-label='Incomplete capture'><strong>Built with available files.</strong> {} assets are missing. Some images, styles, or fonts may be absent. <a href='capture-report.html'>View capture report</a></aside>", catalog.omitted_assets)
     } else {
@@ -282,7 +352,7 @@ pub fn render_index(
         "favicon.png".into()
     };
     Ok(format!(
-        r##"<!doctype html><html lang="{}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="{policy}"><meta name="color-scheme" content="{}"><title>{}</title>{assets}</head><body class="zim-archive{preview_class}" data-zim-template="{}"><a class="archive-skip" href="#collection">Skip to collection</a><div class="archive-shell"><header class="archive-topbar"><a class="archive-wordmark" href="{}"><span class="archive-mark" aria-hidden="true"><img src="{mark_src}" width="27" height="29" alt=""></span>ZIMSMITH<span class="wordmark-divider"></span>YOUR OFFLINE LIBRARY</a><span class="offline-badge"><span aria-hidden="true"></span>Available offline</span></header><main><section class="archive-hero" aria-labelledby="archive-title"><div class="hero-copy"><p class="archive-eyebrow">{name}</p><h1 id="archive-title">{}</h1><p class="archive-description">{}</p><div class="collection-meta"><span>{} items</span><span aria-hidden="true">/</span><span>Curated by {}</span>{sample}</div></div><div class="hero-art" aria-hidden="true"><div class="art-orbit"></div><div class="art-sheet sheet-one"><span>COLLECT</span><i></i><i></i><i></i></div><div class="art-sheet sheet-two"><span>DISCOVER</span><b>↗</b><i></i><i></i></div><span class="art-seal">YOURS.<br>ANYWHERE.</span></div></section>{capture_notice}<section class="archive-collection" id="collection" aria-labelledby="collection-title"><div class="collection-heading"><div><p class="archive-eyebrow">THE COLLECTION</p><h2 id="collection-title">{collection_heading}</h2></div><p class="archive-count" id="count" role="status">{} items to explore</p></div><form class="archive-search" id="search-form" role="search"><label for="search">Search this collection</label><div class="search-control"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search titles and text…" autocomplete="off" spellcheck="false"><button id="clear-search" type="button" hidden>Clear</button><span class="search-hint" aria-hidden="true">SEARCH</span></div></form><ol class="archive-contents" id="contents">{cards}</ol><div class="archive-empty" id="empty-state" hidden><span aria-hidden="true">⌕</span><h3>No matches this time.</h3><p>Try another word or clear your search to see the whole collection.</p></div><noscript><p class="archive-noscript">Search needs JavaScript. All collection links work without it.</p></noscript></section></main><footer class="archive-footer"><div><span class="footer-mark" aria-hidden="true"><img src="{mark_src}" width="27" height="29" alt=""></span><p>A piece of the web.<br><strong>Always within reach.</strong></p></div><a class="source-link" href="{}" rel="noopener noreferrer">Visit original source <span aria-hidden="true">↗</span></a><p class="archive-credit">Made with Zimsmith<br>Open format. Endless possibilities.</p></footer></div>{scripts}</body></html>"##,
+        r##"<!doctype html><html lang="{}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="{policy}"><meta name="color-scheme" content="{}"><title>{}</title>{assets}</head><body class="zim-archive{preview_class}" data-zim-template="{}"><a class="archive-skip" href="#collection">Skip to collection</a><div class="archive-shell"><header class="archive-topbar"><a class="archive-wordmark" href="{}"><span class="archive-mark" aria-hidden="true"><img src="{mark_src}" width="27" height="29" alt=""></span>ZIMSMITH<span class="wordmark-divider"></span>YOUR OFFLINE LIBRARY</a><span class="offline-badge"><span aria-hidden="true"></span>Available offline</span></header><main><section class="archive-hero" aria-labelledby="archive-title"><div class="hero-copy"><p class="archive-eyebrow">{name}</p><h1 id="archive-title">{}</h1><p class="archive-description">{}</p><div class="collection-meta"><span>{} items</span><span aria-hidden="true">/</span><span>Curated by {}</span>{sample}{report_link}</div></div><div class="hero-art" aria-hidden="true"><div class="art-orbit"></div><div class="art-sheet sheet-one"><span>COLLECT</span><i></i><i></i><i></i></div><div class="art-sheet sheet-two"><span>DISCOVER</span><b>↗</b><i></i><i></i></div><span class="art-seal">YOURS.<br>ANYWHERE.</span></div></section>{capture_notice}{search_notice}<section class="archive-collection" id="collection" aria-labelledby="collection-title"><div class="collection-heading"><div><p class="archive-eyebrow">THE COLLECTION</p><h2 id="collection-title">{collection_heading}</h2></div><p class="archive-count" id="count" role="status">{} items to explore</p></div><form class="archive-search" id="search-form" role="search"><label for="search">Search this collection</label><div class="search-control"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search titles and text…" autocomplete="off" spellcheck="false"><button id="clear-search" type="button" hidden>Clear</button><span class="search-hint" aria-hidden="true">SEARCH</span></div></form><ol class="archive-contents" id="contents">{cards}</ol><div class="archive-empty" id="empty-state" hidden><span aria-hidden="true">⌕</span><h3>No matches this time.</h3><p>Try another word or clear your search to see the whole collection.</p></div><noscript><p class="archive-noscript">Search needs JavaScript. All collection links work without it.</p></noscript></section></main><footer class="archive-footer"><div><span class="footer-mark" aria-hidden="true"><img src="{mark_src}" width="27" height="29" alt=""></span><p>A piece of the web.<br><strong>Always within reach.</strong></p></div><a class="source-link" href="{}" rel="noopener noreferrer">{source_label} <span aria-hidden="true">↗</span></a><p class="archive-credit">Made with Zimsmith<br>Open format. Endless possibilities.</p></footer></div>{scripts}</body></html>"##,
         escape(&config.language),
         if matches!(
             template,
@@ -305,10 +375,19 @@ pub fn render_index(
 }
 
 pub fn render_nav(template: ArchiveTemplate, source: &str) -> String {
+    if source.starts_with("https://local-import.invalid/") {
+        return format!("<nav class='zim-archive-nav' data-zim-template='{}' aria-label='Archive navigation'><a href='index.html'>← Collection contents</a><span>Imported saved content</span></nav>", template.id());
+    }
     format!("<nav class='zim-archive-nav' data-zim-template='{}' aria-label='Archive navigation'><a href='index.html'>← Collection contents</a><span>Saved for offline reading</span><a href='{}' rel='noopener noreferrer'>Original source ↗</a></nav>", template.id(), escape(source))
 }
 
 pub fn render_media(template: ArchiveTemplate, config: &NewJob, entry: &Entry) -> String {
+    let imported = entry.url.starts_with("https://local-import.invalid/");
+    let source_label = if imported {
+        "Imported saved files"
+    } else {
+        "Visit original source"
+    };
     let file = entry.media_file.as_deref().unwrap_or("");
     let audio_only = [".mp3", ".m4a", ".ogg", ".wav"]
         .iter()
@@ -318,20 +397,52 @@ pub fn render_media(template: ArchiveTemplate, config: &NewJob, entry: &Entry) -
         .as_ref()
         .map(|file| format!(" poster=\"{}\"", escape(file)))
         .unwrap_or_default();
+    let tracks = entry
+        .subtitles
+        .iter()
+        .enumerate()
+        .map(|(i, track)| {
+            format!(
+                "<track kind='subtitles' src='{}' srclang='{}' label='{}'{}>",
+                escape(&track.file),
+                escape(&track.language),
+                escape(&track.label),
+                if i == 0 { " default" } else { "" }
+            )
+        })
+        .collect::<String>();
+    let transcript = if entry.transcript.is_empty() {
+        String::new()
+    } else {
+        let rows = entry
+            .transcript
+            .iter()
+            .map(|cue| {
+                format!(
+                    "<li class='transcript-cue'><a href='#t={}'>{}:{:02}</a> <span>{}</span></li>",
+                    cue.start,
+                    (cue.start as u64) / 60,
+                    (cue.start as u64) % 60,
+                    escape(&cue.text)
+                )
+            })
+            .collect::<String>();
+        format!("<section class='media-transcript' aria-labelledby='transcript-title'><h2 id='transcript-title'>Transcript</h2><label for='transcript-search'>Search this transcript</label><input id='transcript-search' type='search' placeholder='Find words in this video…'><ol>{rows}</ol></section>")
+    };
     let player = if audio_only {
         format!(
-            "<audio class='standalone-audio' controls preload='metadata' src='{}'></audio>",
+            "<audio class='standalone-audio' id='video-track' controls preload='metadata' src='{}'>{tracks}</audio>",
             escape(file)
         )
     } else {
         format!(
-            "<video id='video-track' controls playsinline preload='metadata'{poster} src='{}'></video>",
+            "<video id='video-track' controls playsinline preload='metadata'{poster} src='{}'>{tracks}</video>",
             escape(file)
         )
     };
 
     format!(
-        r#"<!doctype html><html lang="{}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; font-src 'self'; img-src 'self'; media-src 'self'; form-action 'none'; base-uri 'none'"><title>{}</title><link rel="stylesheet" href="studio.css"></head><body class="zim-archive" data-zim-template="{}">{}<main class="archive-media"><p class="archive-eyebrow">FROM YOUR COLLECTION</p><h1>{}</h1><p class="media-collection">{}</p><div class="media-player">{player}</div><section class="media-description"><h2>About this item</h2><p>{}</p></section><a class="source-link" href="{}" rel="noopener noreferrer">Visit original source ↗</a></main></body></html>"#,
+        r#"<!doctype html><html lang="{}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; font-src 'self'; img-src 'self'; media-src 'self'; form-action 'none'; base-uri 'none'"><title>{}</title><link rel="stylesheet" href="studio.css"></head><body class="zim-archive" data-zim-template="{}">{}<main class="archive-media"><p class="archive-eyebrow">FROM YOUR COLLECTION</p><h1>{}</h1><p class="media-collection">{}</p><div class="media-player">{player}</div><section class="media-description"><h2>About this item</h2><p>{}</p></section>{transcript}<a class="source-link" href="{}" rel="noopener noreferrer">{source_label} ↗</a></main><script src='media.js'></script></body></html>"#,
         escape(&config.language),
         escape(&entry.title),
         template.id(),
@@ -339,12 +450,12 @@ pub fn render_media(template: ArchiveTemplate, config: &NewJob, entry: &Entry) -
         escape(&entry.title),
         escape(&config.title),
         escape(&entry.text),
-        escape(&entry.url)
+        escape(if imported { "index.html" } else { &entry.url })
     )
 }
 
 pub fn preview(template: ArchiveTemplate) -> anyhow::Result<String> {
-    let mut config = NewJob { title: "A world worth exploring.".into(), description: "Field guides, small discoveries, and a few good ideas. Collected to take with you, wherever curiosity leads.".into(), creator: "The curious reader".into(), url: "https://example.com/".into(), kind: SourceKind::Website, max_items: 100, max_depth: 2, delay_ms: 2000, max_resource_mb: 256, language: "eng".into(), include_assets: true };
+    let mut config = NewJob { title: "A world worth exploring.".into(), description: "Field guides, small discoveries, and a few good ideas. Collected to take with you, wherever curiosity leads.".into(), creator: "The curious reader".into(), url: "https://example.com/".into(), kind: SourceKind::Website, max_items: 100, max_depth: 2, delay_ms: 2000, max_resource_mb: 256, language: "eng".into(), include_assets: true, capture: Default::default() };
     if template == ArchiveTemplate::ScreeningRoom {
         config.kind = SourceKind::Media;
         config.title = "Ideas worth a closer look.".into();
@@ -359,7 +470,7 @@ pub fn preview(template: ArchiveTemplate) -> anyhow::Result<String> {
         ("Small ideas, lasting change", "Good questions lead to unexpected places. A collection of practical ideas for a more thoughtful world."),
         ("Notes from elsewhere", "Stories from people and places that remind us how much there is still to discover.")
     ].into_iter().enumerate() {
-        let entry = Entry { id: format!("sample-{i}"), url: config.url.clone(), title: title.into(), text: text.into(), depth: 0, selected: true, state: "done".into(), size: None, duration: None, error: None, assets: vec![], media_file: None, media_audio: None, thumbnail_url: None, thumbnail_file: None };
+        let entry = Entry { id: format!("sample-{i}"), url: config.url.clone(), title: title.into(), text: text.into(), depth: 0, selected: true, state: "done".into(), size: None, duration: None, error: None, assets: vec![], media_file: None, subtitles: vec![], transcript: vec![], transcript_file: None, subtitle_policy: None, subtitle_error: None, media_audio: None, thumbnail_url: None, thumbnail_file: None };
         let mut entry = entry;
         if template == ArchiveTemplate::ScreeningRoom {
             entry.duration = Some([752., 1184., 401., 946.][i]);
@@ -403,6 +514,7 @@ mod tests {
             max_resource_mb: 256,
             language: "eng".into(),
             include_assets: true,
+            capture: Default::default(),
         };
         let catalog = SearchCatalog {
             documents: vec![Document {
@@ -413,6 +525,8 @@ mod tests {
                 detail: "1 min read".into(),
                 thumbnail: None,
                 media: None,
+                subtitles: vec![],
+                cues: vec![],
             }],
             ..Default::default()
         };
@@ -439,6 +553,11 @@ mod tests {
             error: None,
             assets: vec![],
             media_file: Some("recording.mp3".into()),
+            subtitles: vec![],
+            transcript: vec![],
+            transcript_file: None,
+            subtitle_policy: None,
+            subtitle_error: None,
             media_audio: None,
             thumbnail_url: None,
             thumbnail_file: None,

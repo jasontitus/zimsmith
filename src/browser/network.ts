@@ -1,3 +1,4 @@
+import { assetAllowed, captureOptions } from "../capture";
 import robotsParser from "robots-parser";
 import { now, type BrowserJob, type Receipt } from "./model";
 import { readFile, Store, syncFile } from "./storage";
@@ -9,6 +10,7 @@ interface Host {
   robots_at?: number;
 }
 export class Paused extends Error {}
+export class ExcludedAsset extends Error {}
 export class Network {
   private hosts = new Map<string, Host>();
   constructor(
@@ -19,6 +21,19 @@ export class Network {
     private save: (force?: boolean) => Promise<void>,
     private log: (level: string, message: string) => void,
   ) {}
+  private remaining() {
+    const budget = captureOptions(this.job.config).max_download_mb;
+    return budget === null
+      ? Infinity
+      : Math.max(0, budget * 1024 * 1024 - (this.job.downloaded_bytes || 0));
+  }
+  private consume(bytes: number) {
+    if (bytes > this.remaining())
+      throw new Error(
+        "Download budget reached. Increase the budget in Edit crawl to continue.",
+      );
+    this.job.downloaded_bytes = (this.job.downloaded_bytes || 0) + bytes;
+  }
   check() {
     if (this.signal.aborted) throw new Paused("Paused");
   }
@@ -48,6 +63,10 @@ export class Network {
       host = await this.host(origin);
     for (let attempt = 0; attempt < 4; attempt++) {
       this.check();
+      if (this.remaining() === 0)
+        throw new Error(
+          "Download budget reached. Increase the budget in Edit crawl to continue.",
+        );
       await this.wait(Math.max(host.next, (this.job.retry_at || 0) * 1000));
       this.job.retry_at = null;
       host.next = Date.now() + delay;
@@ -220,6 +239,7 @@ export class Network {
         const { value, done } = await this.read(reader);
         if (done) break;
         size += value.length;
+        this.consume(value.length);
         this.job.bytes += value.length;
         if (size > limit)
           throw new Error("Metadata exceeds the browser's safe size limit.");
@@ -242,7 +262,9 @@ export class Network {
     asset = false,
   ): Promise<Receipt> {
     const receipt = this.job.resources[url];
-    if (receipt?.done) {
+    if (asset && !assetAllowed(this.job.config, url, receipt?.mime))
+      throw new ExcludedAsset("Excluded by capture settings");
+    if (receipt?.done && !receipt.revalidate) {
       try {
         if ((await readFile(this.dir, receipt.file)).size === receipt.size)
           return receipt;
@@ -265,12 +287,43 @@ export class Network {
       const headers: Record<string, string> = start
         ? { Range: `bytes=${start}-`, "If-Range": receipt!.etag! }
         : {};
+      const crossOriginRevalidation =
+        /^https?:$/.test(location.protocol) &&
+        new URL(url).origin !== location.origin;
+      const canRevalidate =
+        !crossOriginRevalidation &&
+        receipt?.done &&
+        receipt.revalidate &&
+        file.getSize() === receipt.size &&
+        receipt.size <= limit;
+      if (canRevalidate) {
+        if (receipt.etag) headers["If-None-Match"] = receipt.etag;
+        else if (receipt.last_modified)
+          headers["If-Modified-Since"] = receipt.last_modified;
+      }
       const response = await this.request(url, headers, delay);
+      if (response.status === 304 && canRevalidate) {
+        receipt.revalidate = false;
+        await response.body?.cancel();
+        await this.save(true);
+        return receipt;
+      }
       if (!response.ok) {
         await response.body?.cancel();
         throw new Error(
           `HTTP ${response.status} ${response.statusText}: ${new URL(url).pathname}`,
         );
+      }
+      if (
+        asset &&
+        !assetAllowed(
+          this.job.config,
+          url,
+          response.headers.get("Content-Type") || "",
+        )
+      ) {
+        await response.body?.cancel();
+        throw new ExcludedAsset("Excluded by file-type settings");
       }
       const etag = response.headers.get("ETag") || undefined;
       const range = response.headers.get("Content-Range");
@@ -310,6 +363,12 @@ export class Network {
         await response.body?.cancel();
         throw new Error("This file exceeds the configured file-size limit.");
       }
+      if (total !== undefined && total - start > this.remaining()) {
+        await response.body?.cancel();
+        throw new Error(
+          "Download budget reached. Increase the budget in Edit crawl to continue.",
+        );
+      }
       const estimate = await navigator.storage.estimate();
       if (
         total &&
@@ -336,6 +395,7 @@ export class Network {
           (!encoding || encoding === "identity")
             ? etag
             : undefined,
+        last_modified: response.headers.get("Last-Modified") || undefined,
         total,
         done: false,
       };
@@ -365,6 +425,7 @@ export class Network {
             "Browser storage returned a short write. Free space and resume.",
           );
         saved.size += value.length;
+        this.consume(value.length);
         this.job.bytes += value.length;
         this.job.progress.received = saved.size;
         this.job.progress.updated_at = now();

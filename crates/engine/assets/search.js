@@ -16,7 +16,21 @@
     let visible = 0;
     for (const card of cards) {
       card.hidden = matches !== null && !matches.has(Number(card.dataset.document));
-      if (!card.hidden) visible++;
+      card.querySelector(".transcript-match")?.remove();
+      if (!card.hidden) {
+        visible++;
+        if (terms.length) {
+          const item = data.documents[Number(card.dataset.document)];
+          const cue = item.cues?.find(cue => terms.some(term => cue.text.toLowerCase().includes(term)));
+          if (cue) {
+            const link = document.createElement("a"); link.className = "transcript-match";
+            link.href = `${item.url}#t=${cue.start}`;
+            const seconds = Math.floor(cue.start);
+            link.textContent = `Play at ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,"0")} · ${cue.text.slice(0,180)}`;
+            card.append(link);
+          }
+        }
+      }
     }
     count.textContent = terms.length ? `${visible} of ${data.documents.length} items` : `${data.documents.length} items to explore`;
     empty.hidden = visible > 0;

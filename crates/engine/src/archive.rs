@@ -55,19 +55,6 @@ pub async fn package(record: &Record) -> Result<()> {
         .iter()
         .filter(|url| !job.resources.get(*url).is_some_and(|r| r.state == "done"))
         .collect();
-    if !omitted.is_empty() {
-        let rows = omitted
-            .iter()
-            .map(|url| {
-                let label = http_url(url)
-                    .map(|u| format!("{}{}", u.origin().ascii_serialization(), u.path()))
-                    .unwrap_or_else(|_| "Unavailable asset".into());
-                format!("<li>{}</li>", escape(&label))
-            })
-            .collect::<String>();
-        let report = format!("<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><meta http-equiv='Content-Security-Policy' content=\"default-src 'none'; style-src 'self'; font-src 'self'; img-src 'self'\"><title>Capture report</title><link rel='stylesheet' href='studio.css'></head><body class='zim-archive'><main class='archive-media'><a href='index.html'>Back to collection</a><h1>Capture report</h1><p>Built with available files at your request. {} assets were omitted. Some images, styles, or fonts may be missing. All selected pages are included.</p><ul>{rows}</ul></main></body></html>", omitted.len());
-        tokio::fs::write(content.join("capture-report.html"), report).await?;
-    }
     let omitted_count = omitted.len();
     for url in needed {
         let Some(resource) = job.resources.get(&url).filter(|r| r.state == "done") else {
@@ -95,6 +82,7 @@ pub async fn package(record: &Record) -> Result<()> {
     }
     let mut catalog = templates::SearchCatalog::default();
     catalog.omitted_assets = omitted_count;
+    catalog.capture_report = true;
     for (index, entry) in selected.iter().enumerate() {
         record
             .progress(
@@ -105,7 +93,32 @@ pub async fn package(record: &Record) -> Result<()> {
             )
             .await;
         let mut catalog_entry = (*entry).clone();
-        let page = match job.config.kind {
+        if !job.config.capture.subtitles {
+            catalog_entry.subtitles.clear();
+            catalog_entry.transcript.clear();
+            catalog_entry.transcript_file = None;
+        }
+        if let Some(file) = &catalog_entry.transcript_file {
+            let path = record.dir.join("media").join(file);
+            anyhow::ensure!(
+                tokio::fs::metadata(&path).await?.len() <= 4 * 1024 * 1024,
+                "Transcript exceeds safe parsing size"
+            );
+            catalog_entry.transcript = serde_json::from_slice(&tokio::fs::read(path).await?)?;
+        }
+        for track in &catalog_entry.subtitles {
+            tokio::fs::copy(
+                record.dir.join("media").join(&track.file),
+                content.join(&track.file),
+            )
+            .await?;
+        }
+        let item_kind = if entry.media_file.is_some() {
+            SourceKind::Media
+        } else {
+            job.config.kind.clone()
+        };
+        let page = match item_kind {
             SourceKind::Website => {
                 let html = tokio::fs::read_to_string(
                     record.dir.join("cache").join(format!("{}.html", entry.id)),
@@ -154,11 +167,14 @@ pub async fn package(record: &Record) -> Result<()> {
             }
         };
         tokio::fs::write(content.join(format!("{}.html", entry.id)), page).await?;
-        catalog.add(&catalog_entry, &job.config.kind);
+        catalog.add(&catalog_entry, &item_kind);
     }
+    let report =
+        crate::capture_report::write(record, &job, &selected, &catalog, &paths, &content).await?;
     let index = templates::render_index(job.archive_template, &job.config, &catalog, false)?;
     tokio::fs::write(content.join("index.html"), index).await?;
     tokio::fs::write(content.join("search.js"), templates::SEARCH_JS).await?;
+    tokio::fs::write(content.join("media.js"), templates::MEDIA_JS).await?;
     if job.archive_template == ArchiveTemplate::ScreeningRoom {
         tokio::fs::write(content.join("gallery.js"), templates::GALLERY_JS).await?;
     }
@@ -185,7 +201,14 @@ pub async fn package(record: &Record) -> Result<()> {
         ("Language", &job.config.language),
         ("Creator", &job.config.creator),
         ("Publisher", "Zimsmith"),
-        ("Source", &job.config.url),
+        (
+            "Source",
+            if job.import.is_some() {
+                "Local saved content"
+            } else {
+                &job.config.url
+            },
+        ),
         ("Scraper", "Zimsmith 0.1"),
     ] {
         creator.try_add_metadata(name, value)?;
@@ -302,11 +325,13 @@ pub async fn package(record: &Record) -> Result<()> {
         header.starts_with(&[0x5a, 0x49, 0x4d, 0x04]),
         "Writer output is not a ZIM file"
     );
+    let validation = crate::capture_report::validate(record, &partial).await?;
     let final_path = record.dir.join("archive.zim");
     // Same-directory rename replaces atomically, preserving the old ZIM on failure.
     tokio::fs::rename(&partial, &final_path).await?;
     record.change(|j| {
         j.status = "completed".into(); j.output = Some(final_path.display().to_string()); j.output_bytes = Some(size);
+        j.capture_report=Some(report); j.validation=Some(validation);
         j.error = None; j.log("info", format!("Archive ready: {size} bytes. Includes {} entries, table of contents, and full-text index.", selected.len()));
         j.progress.label = "Archive complete".into(); j.progress.total = Some(files.len() as u64); j.progress.completed = files.len() as u64; j.progress.updated_at = now();
     }).await

@@ -24,6 +24,7 @@ fn config(url: String) -> NewJob {
         description: "Offline fixture".into(),
         creator: "Fixture".into(),
         include_assets: true,
+        capture: Default::default(),
     }
 }
 async fn wait(engine: &Engine, id: &str, status: &str) -> Job {
@@ -781,6 +782,8 @@ async fn saved_attempt(root: &std::path::Path, id: &str, status: &str) -> Job {
                 }
                 .into(),
                 dependencies: vec![],
+                etag: None,
+                last_modified: None,
                 size: 1,
             },
         );
@@ -825,7 +828,14 @@ async fn failed_attempt_deletion_removes_only_its_internal_files_and_survives_re
 #[tokio::test]
 async fn available_files_recovery_keeps_pages_and_saved_assets_with_visible_omission_report() {
     let temp = tempfile::tempdir().unwrap();
-    let fixture = saved_attempt(temp.path(), "partial", "paused").await;
+    let mut fixture = saved_attempt(temp.path(), "partial", "paused").await;
+    fixture.retry_at = Some(zim_engine::now() + 3600);
+    tokio::fs::write(
+        temp.path().join("partial/job.json"),
+        serde_json::to_vec(&fixture).unwrap(),
+    )
+    .await
+    .unwrap();
     let engine = Engine::open(temp.path()).await.unwrap();
     let summary = engine
         .get("partial")
@@ -894,5 +904,592 @@ async fn available_files_recovery_rejects_missing_selected_page_before_changing_
             .await
             .unwrap(),
         "previous archive"
+    );
+}
+
+#[tokio::test]
+async fn refresh_reviews_changes_before_rebuilding_and_preserves_previous_archive() {
+    let generation = Arc::new(AtomicUsize::new(0));
+    let app = Router::new()
+        .route("/robots.txt", get(|| async { "User-agent: *\nAllow: /" }))
+        .route(
+            "/",
+            get(|State(g): State<Arc<AtomicUsize>>| async move {
+                if g.load(Ordering::SeqCst) == 0 {
+                    Html("<title>Collection</title><a href='/old'>Old page</a>")
+                } else {
+                    Html("<title>Updated collection</title><a href='/new'>New page</a>")
+                }
+            }),
+        )
+        .route(
+            "/old",
+            get(|| async { Html("<title>Old page</title><p>Earlier notes</p>") }),
+        )
+        .route(
+            "/new",
+            get(|| async { Html("<title>New page</title><p>New notes</p>") }),
+        )
+        .with_state(generation.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let temp = tempfile::tempdir().unwrap();
+    let engine = Engine::open(temp.path()).await.unwrap();
+    let created = engine.create(config(url.clone())).await.unwrap();
+    wait(&engine, &created.id, "completed").await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let previous = tokio::fs::read(temp.path().join(&created.id).join("archive.zim"))
+        .await
+        .unwrap();
+    generation.store(1, Ordering::SeqCst);
+    engine.refresh_collection(&created.id).await.unwrap();
+    let review = wait(&engine, &created.id, "review").await;
+    assert_eq!(review.archive_revision, 1);
+    let refresh = review.refresh.unwrap();
+    assert!(refresh.complete);
+    assert!(refresh
+        .changes
+        .iter()
+        .any(|c| c.url == url && c.kind == "changed"));
+    assert!(refresh
+        .changes
+        .iter()
+        .any(|c| c.url.ends_with("/new") && c.kind == "new"));
+    assert!(refresh
+        .changes
+        .iter()
+        .any(|c| c.url.ends_with("/old") && c.kind == "not_seen"));
+    assert_eq!(
+        tokio::fs::read(temp.path().join(&created.id).join("archive.zim"))
+            .await
+            .unwrap(),
+        previous
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    engine
+        .build(
+            &created.id,
+            review.entries.iter().map(|e| e.id.clone()).collect(),
+        )
+        .await
+        .unwrap();
+    wait(&engine, &created.id, "completed").await;
+    let archive = zimru::Archive::open(engine.artifact(&created.id).await.unwrap()).unwrap();
+    let index = archive.get_text("index.html").unwrap();
+    assert!(index.contains("New page"));
+    assert!(!index.contains("Old page"));
+    server.abort();
+}
+
+#[tokio::test]
+async fn refresh_reuses_saved_youtube_media_and_marks_incomplete_scan_without_claiming_removal() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut fixture = saved_attempt(temp.path(), "refresh-media", "paused").await;
+    fixture.config.kind = SourceKind::Media;
+    fixture.config.url = "https://www.youtube.com/playlist?list=fixture".into();
+    let mut previous = fixture.entries[0].clone();
+    previous.url = "https://www.youtube.com/watch?v=fixture1234".into();
+    previous.state = "done".into();
+    previous.media_file = Some("saved.mp4".into());
+    previous.media_audio = Some("saved-audio.m4a".into());
+    fixture.entries[0] = previous.clone();
+    fixture.entries[0].state = "pending".into();
+    fixture.entries[0].media_file = None;
+    fixture.entries[0].media_audio = None;
+    let mut unseen = previous.clone();
+    unseen.url = "https://www.youtube.com/watch?v=fixture5678".into();
+    fixture.refresh = Some(zim_engine::refresh::RefreshState {
+        previous: vec![previous, unseen],
+        ..Default::default()
+    });
+    fixture.scan_truncated = true;
+    let dir = temp.path().join("refresh-media");
+    tokio::fs::create_dir_all(dir.join("media")).await.unwrap();
+    tokio::fs::write(dir.join("media/saved.mp4"), "video")
+        .await
+        .unwrap();
+    tokio::fs::write(dir.join("media/saved-audio.m4a"), "audio")
+        .await
+        .unwrap();
+    tokio::fs::write(dir.join("job.json"), serde_json::to_vec(&fixture).unwrap())
+        .await
+        .unwrap();
+    let engine = Engine::open(temp.path()).await.unwrap();
+    let record = engine.record("refresh-media").await.unwrap();
+    zim_engine::refresh::compare(&record).await.unwrap();
+    let job = engine.get("refresh-media").await.unwrap();
+    assert_eq!(job.entries[0].state, "done");
+    assert_eq!(job.entries[0].media_file.as_deref(), Some("saved.mp4"));
+    assert_eq!(
+        job.entries[0].media_audio.as_deref(),
+        Some("saved-audio.m4a")
+    );
+    let refresh = job.refresh.unwrap();
+    assert!(!refresh.complete);
+    assert_eq!(
+        refresh
+            .changes
+            .iter()
+            .filter(|c| c.kind == "not_seen")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn scope_asset_switches_and_budget_preserve_pages_before_large_assets() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let app = Router::new()
+        .route("/robots.txt",get(|| async { "User-agent: *\nAllow: /" }))
+        .route("/",get(|| async { Html("<title>Home</title><a href='/news/story'>Story</a><a href='/news/private'>Private</a><a href='/about'>About</a>") }))
+        .route("/news/story",get(|| async { Html("<title>Story</title><p>Important saved text.</p><img src='/large.png'><link rel='stylesheet' href='/font.woff2'>") }))
+        .route("/news/private",get(|| async { panic!("excluded page was requested"); #[allow(unreachable_code)] "private" }))
+        .route("/about",get(|| async { panic!("out-of-include page was requested"); #[allow(unreachable_code)] "about" }))
+        .route("/font.woff2",get(|| async { panic!("disabled font was requested"); #[allow(unreachable_code)] "font" }))
+        .route("/large.png",get(|State(hits):State<Arc<AtomicUsize>>| async move { hits.fetch_add(1,Ordering::SeqCst); ([("Content-Type","image/png")], vec![0u8; 2*1024*1024]) }))
+        .with_state(hits.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let temp = tempfile::tempdir().unwrap();
+    let engine = Engine::open(temp.path()).await.unwrap();
+    let mut options = config(url);
+    options.capture.include_urls = vec!["/news/*".into()];
+    options.capture.exclude_urls = vec!["/news/private".into()];
+    options.capture.fonts = false;
+    options.capture.max_download_mb = Some(1);
+    let created = engine.create(options).await.unwrap();
+    let review = wait(&engine, &created.id, "review").await;
+    assert_eq!(review.entries.len(), 2);
+    assert!(
+        !review.entries[0].selected,
+        "seed page is discovery-only when not included"
+    );
+    let selected = review
+        .entries
+        .iter()
+        .filter(|e| e.selected)
+        .map(|e| e.id.clone())
+        .collect();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    engine.build(&created.id, selected).await.unwrap();
+    let failed = wait(&engine, &created.id, "failed").await;
+    assert!(failed.downloaded_bytes < 1024 * 1024);
+    assert_eq!(
+        failed
+            .resources
+            .values()
+            .filter(|r| r.state == "excluded")
+            .count(),
+        1
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    engine.build_available(&created.id).await.unwrap();
+    wait(&engine, &created.id, "completed").await;
+    let archive = zimru::Archive::open(engine.artifact(&created.id).await.unwrap()).unwrap();
+    assert!(archive.get_text("index.html").unwrap().contains("Story"));
+    assert!(archive
+        .get_text("capture-report.html")
+        .unwrap()
+        .contains("large.png"));
+    server.abort();
+}
+
+#[tokio::test]
+async fn caption_archive_packages_vtt_full_transcript_and_search_timestamps_offline() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut fixture = saved_attempt(temp.path(), "caption-fixture", "completed").await;
+    fixture.config.kind = SourceKind::Media;
+    fixture.config.url = "https://media.example.test/movie.mp4".into();
+    fixture.resources.clear();
+    fixture.phase = "package".into();
+    fixture.entries[0].state = "done".into();
+    fixture.entries[0].assets.clear();
+    fixture.entries[0].media_file = Some("saved.mp4".into());
+    fixture.entries[0].transcript_file = Some("transcript.json".into());
+    fixture.entries[0].subtitles = vec![zim_engine::captions::SavedSubtitle {
+        file: "captions.vtt".into(),
+        language: "en".into(),
+        label: "English".into(),
+        auto_generated: false,
+    }];
+    let cues = vec![zim_engine::captions::Cue {
+        start: 1.25,
+        duration: 2.0,
+        text: "Moonlight botanists <script> & stars".into(),
+    }];
+    let dir = temp.path().join("caption-fixture");
+    tokio::fs::create_dir_all(dir.join("media")).await.unwrap();
+    tokio::fs::write(dir.join("media/saved.mp4"), "fixture video")
+        .await
+        .unwrap();
+    tokio::fs::write(
+        dir.join("media/transcript.json"),
+        serde_json::to_vec(&cues).unwrap(),
+    )
+    .await
+    .unwrap();
+    tokio::fs::write(
+        dir.join("media/captions.vtt"),
+        zim_engine::captions::vtt(&cues),
+    )
+    .await
+    .unwrap();
+    tokio::fs::write(dir.join("job.json"), serde_json::to_vec(&fixture).unwrap())
+        .await
+        .unwrap();
+    let engine = Engine::open(temp.path()).await.unwrap();
+    engine
+        .rebuild("caption-fixture", ArchiveTemplate::ScreeningRoom)
+        .await
+        .unwrap();
+    let done = wait(&engine, "caption-fixture", "completed").await;
+    assert_eq!(done.requests, fixture.requests);
+    let archive = zimru::Archive::open(engine.artifact("caption-fixture").await.unwrap()).unwrap();
+    let index = archive.get_text("index.html").unwrap();
+    assert!(index.contains("moonlight"));
+    assert!(index.contains("\\\"start\\\":1.25") || index.contains("\"start\":1.25"));
+    let page = archive.get_text("home.html").unwrap();
+    assert!(page.contains("kind='subtitles' src='captions.vtt'"));
+    assert!(page.contains("href='#t=1.25'"));
+    assert!(page.contains("&lt;script&gt; &amp; stars"));
+    assert!(!page.contains("botanists <script>"));
+    assert!(archive
+        .get_text("captions.vtt")
+        .unwrap()
+        .contains("00:00:01.250"));
+    assert!(archive
+        .get_text("media.js")
+        .unwrap()
+        .contains("currentTime"));
+    if let Some(destination) = std::env::var_os("ZIMSTUDIO_CAPTIONS_OUTPUT_DIR") {
+        tokio::fs::create_dir_all(&destination).await.unwrap();
+        let mut files = tokio::fs::read_dir(dir.join("content")).await.unwrap();
+        while let Some(file) = files.next_entry().await.unwrap() {
+            tokio::fs::copy(
+                file.path(),
+                std::path::Path::new(&destination).join(file.file_name()),
+            )
+            .await
+            .unwrap();
+        }
+    }
+}
+
+fn import_zip(files: &[(&str, &[u8])]) -> Vec<u8> {
+    use std::io::{Cursor, Write};
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for (name, bytes) in files {
+        writer
+            .start_file(
+                *name,
+                zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Deflated),
+            )
+            .unwrap();
+        writer.write_all(bytes).unwrap();
+    }
+    writer.finish().unwrap().into_inner()
+}
+async fn upload(engine: &Engine, config: NewJob, name: &str, bytes: &[u8]) -> Job {
+    let job = engine
+        .begin_import(
+            config,
+            vec![zim_engine::imports::ImportFile {
+                path: name.into(),
+                size: bytes.len() as u64,
+            }],
+            None,
+        )
+        .await
+        .unwrap();
+    for (index, chunk) in bytes.chunks(256 * 1024).enumerate() {
+        engine
+            .import_chunk(&job.id, name, (index * 256 * 1024) as u64, chunk)
+            .await
+            .unwrap();
+    }
+    job
+}
+#[tokio::test]
+async fn imports_saved_zip_with_assets_offline_and_can_rebuild_without_uploaded_staging() {
+    let html=b"<title>Imported garden</title><link rel='stylesheet' href='assets/style.css'><p>Locally saved botany.</p><img src='missing.png'>";
+    let zip = import_zip(&[
+        ("saved/index.html", html),
+        ("saved/assets/style.css", b"body{color:green}"),
+    ]);
+    let temp = tempfile::tempdir().unwrap();
+    let engine = Engine::open(temp.path()).await.unwrap();
+    let job = upload(
+        &engine,
+        config("https://example.test/".into()),
+        "saved.zip",
+        &zip,
+    )
+    .await;
+    let review = engine.finish_import(&job.id).await.unwrap();
+    assert_eq!(review.status, "review");
+    assert_eq!(review.requests, 0);
+    assert!(review.import.as_ref().unwrap().finished);
+    assert!(!temp.path().join(&job.id).join("uploads").exists());
+    assert_eq!(review.entries.len(), 1);
+    assert_eq!(review.resources.len(), 1);
+    engine
+        .build(
+            &job.id,
+            review.entries.iter().map(|e| e.id.clone()).collect(),
+        )
+        .await
+        .unwrap();
+    let done = wait(&engine, &job.id, "completed").await;
+    assert_eq!(
+        done.requests, 0,
+        "local imports must never fetch missing resources"
+    );
+    let archive = zimru::Archive::open(engine.artifact(&job.id).await.unwrap()).unwrap();
+    assert!(archive
+        .get_text("index.html")
+        .unwrap()
+        .contains("Imported garden"));
+    assert!(archive
+        .get_text("index.html")
+        .unwrap()
+        .contains("Imported saved files"));
+    assert!(archive
+        .get_text("capture-report.html")
+        .unwrap()
+        .contains("missing.png"));
+    let page = archive
+        .get_text(&format!("{}.html", review.entries[0].id))
+        .unwrap();
+    assert!(page.contains("Locally saved botany"));
+    assert!(!page.contains("href='assets/style.css'"));
+    let css = review.resources.values().next().unwrap();
+    assert!(archive.get_text(&css.path).unwrap().contains("color:green"));
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    engine
+        .rebuild(&job.id, ArchiveTemplate::FieldNotes)
+        .await
+        .unwrap();
+    assert_eq!(wait(&engine, &job.id, "completed").await.requests, 0);
+}
+#[tokio::test]
+async fn interrupted_import_resumes_exact_saved_bytes_and_rejects_unapproved_paths() {
+    let temp = tempfile::tempdir().unwrap();
+    let engine = Engine::open(temp.path()).await.unwrap();
+    let html = b"<title>Resumed page</title><p>Saved content</p>";
+    let files = vec![zim_engine::imports::ImportFile {
+        path: "index.html".into(),
+        size: html.len() as u64,
+    }];
+    let settings = config("https://example.test/".into());
+    let job = engine
+        .begin_import(settings.clone(), files.clone(), None)
+        .await
+        .unwrap();
+    engine
+        .import_chunk(&job.id, "index.html", 0, &html[..10])
+        .await
+        .unwrap();
+    assert!(engine
+        .import_chunk(&job.id, "../escape", 0, b"x")
+        .await
+        .is_err());
+    assert!(engine
+        .import_chunk(&job.id, "index.html", 0, b"x")
+        .await
+        .is_err());
+    drop(engine);
+    let engine = Engine::open(temp.path()).await.unwrap();
+    assert_eq!(engine.get(&job.id).await.unwrap().status, "paused");
+    assert!(engine.resume(&job.id).await.is_err());
+    engine
+        .begin_import(settings, files, Some(job.id.clone()))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.import_offset(&job.id, "index.html").await.unwrap(),
+        10
+    );
+    engine
+        .import_chunk(&job.id, "index.html", 10, &html[10..])
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.finish_import(&job.id).await.unwrap().entries[0].title,
+        "Resumed page"
+    );
+}
+#[tokio::test]
+async fn zip_import_rejects_traversal_case_aliases_and_expansion_beyond_budget() {
+    for files in [
+        vec![("../outside.html", b"<title>Escape</title>".as_slice())],
+        vec![
+            ("index.html", b"<title>A</title>".as_slice()),
+            ("INDEX.html", b"<title>B</title>".as_slice()),
+        ],
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let engine = Engine::open(temp.path()).await.unwrap();
+        let zip = import_zip(&files);
+        let job = upload(
+            &engine,
+            config("https://example.test/".into()),
+            "unsafe.zip",
+            &zip,
+        )
+        .await;
+        assert!(engine.finish_import(&job.id).await.is_err());
+        assert_eq!(engine.get(&job.id).await.unwrap().status, "failed");
+        assert!(!temp.path().join("outside.html").exists());
+        assert!(engine.delete_failed(&job.id).await.unwrap());
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let engine = Engine::open(temp.path()).await.unwrap();
+    let bytes = vec![b'x'; 2 * 1024 * 1024];
+    let zip = import_zip(&[("large.html", &bytes)]);
+    let mut options = config("https://example.test/".into());
+    options.capture.max_download_mb = Some(1);
+    let job = upload(&engine, options, "large.zip", &zip).await;
+    assert!(engine
+        .finish_import(&job.id)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("budget"));
+}
+#[tokio::test]
+async fn url_list_crawls_each_seed_scope_and_does_not_fetch_outside_paths() {
+    let app = Router::new()
+        .route("/robots.txt", get(|| async { "User-agent: *\nAllow: /" }))
+        .route(
+            "/first/",
+            get(|| async { Html("<title>First</title><a href='/outside'>Outside</a>") }),
+        )
+        .route("/second/", get(|| async { Html("<title>Second</title>") }))
+        .route(
+            "/outside",
+            get(|| async {
+                panic!("out-of-scope URL was fetched");
+                #[allow(unreachable_code)]
+                "outside"
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let temp = tempfile::tempdir().unwrap();
+    let engine = Engine::open(temp.path()).await.unwrap();
+    let mut options = config(format!("{base}/first/"));
+    options.capture.seed_urls = vec![format!("{base}/second/")];
+    let created = engine.create(options).await.unwrap();
+    let done = wait(&engine, &created.id, "completed").await;
+    assert_eq!(done.entries.len(), 2);
+    assert!(done.entries.iter().any(|e| e.title == "Second"));
+    server.abort();
+}
+
+#[tokio::test]
+async fn website_refresh_revalidates_same_url_assets_and_reuses_unchanged_responses() {
+    use axum::http::HeaderMap;
+    let generation = Arc::new(AtomicUsize::new(0));
+    let conditional = Arc::new(AtomicUsize::new(0));
+    let state = (generation.clone(), conditional.clone());
+    let app=Router::new().route("/robots.txt",get(||async{"User-agent: *\nAllow: /"}))
+      .route("/",get(||async{Html("<title>Asset refresh</title><p>Stable page text.</p><link rel='stylesheet' href='/style.css'><img src='/image.svg'>")}))
+      .route("/style.css",get(|headers:HeaderMap,State((_generation,count)):State<(Arc<AtomicUsize>,Arc<AtomicUsize>)>|async move{
+        if headers.get("if-none-match").and_then(|v|v.to_str().ok())==Some("\"style-stable\""){count.fetch_add(1,Ordering::SeqCst);return StatusCode::NOT_MODIFIED.into_response();}
+        ([("Content-Type","text/css"),("ETag","\"style-stable\"")],"body{color:blue}").into_response()
+      }))
+      .route("/image.svg",get(|headers:HeaderMap,State((generation,count)):State<(Arc<AtomicUsize>,Arc<AtomicUsize>)>|async move{
+        if headers.contains_key("if-none-match"){count.fetch_add(1,Ordering::SeqCst);}
+        let new=generation.load(Ordering::SeqCst)>0;
+        ([("Content-Type","image/svg+xml"),("ETag",if new{"\"image-new\""}else{"\"image-old\""})],if new{"<svg>updated</svg>"}else{"<svg>original</svg>"}).into_response()
+      })).with_state(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let temp = tempfile::tempdir().unwrap();
+    let engine = Engine::open(temp.path()).await.unwrap();
+    let created = engine.create(config(base.clone())).await.unwrap();
+    wait(&engine, &created.id, "completed").await;
+    generation.store(1, Ordering::SeqCst);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    engine.refresh_collection(&created.id).await.unwrap();
+    let review = wait(&engine, &created.id, "review").await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    engine
+        .build(
+            &created.id,
+            review
+                .entries
+                .iter()
+                .filter(|e| e.selected)
+                .map(|e| e.id.clone())
+                .collect(),
+        )
+        .await
+        .unwrap();
+    let done = wait(&engine, &created.id, "completed").await;
+    assert_eq!(
+        conditional.load(Ordering::SeqCst),
+        2,
+        "both saved assets should be revalidated"
+    );
+    let archive = zimru::Archive::open(engine.artifact(&created.id).await.unwrap()).unwrap();
+    let image = done.resources.get(&format!("{base}image.svg")).unwrap();
+    let css = done.resources.get(&format!("{base}style.css")).unwrap();
+    assert!(archive.get_text(&image.path).unwrap().contains("updated"));
+    assert!(archive.get_text(&css.path).unwrap().contains("color:blue"));
+    assert!(done.validation.unwrap().checksum_verified);
+    server.abort();
+}
+
+#[tokio::test]
+async fn validation_detects_checksum_and_directory_corruption_without_touching_the_good_archive() {
+    use md5::{Digest, Md5};
+    let temp = tempfile::tempdir().unwrap();
+    saved_attempt(temp.path(), "validate", "paused").await;
+    let engine = Engine::open(temp.path()).await.unwrap();
+    engine.build_available("validate").await.unwrap();
+    wait(&engine, "validate", "completed").await;
+    let record = engine.record("validate").await.unwrap();
+    let good = tokio::fs::read(engine.artifact("validate").await.unwrap())
+        .await
+        .unwrap();
+    let corrupt = temp.path().join("corrupt.zim");
+    let mut bytes = good.clone();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 1;
+    tokio::fs::write(&corrupt, &bytes).await.unwrap();
+    assert!(zim_engine::capture_report::validate(&record, &corrupt)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("checksum"));
+    bytes = good.clone();
+    bytes[32..40].copy_from_slice(&u64::MAX.to_le_bytes());
+    let end = bytes.len() - 16;
+    let digest = Md5::digest(&bytes[..end]);
+    bytes[end..].copy_from_slice(&digest);
+    tokio::fs::write(&corrupt, &bytes).await.unwrap();
+    assert!(zim_engine::capture_report::validate(&record, &corrupt)
+        .await
+        .is_err());
+    assert_eq!(
+        tokio::fs::read(engine.artifact("validate").await.unwrap())
+            .await
+            .unwrap(),
+        good
     );
 }

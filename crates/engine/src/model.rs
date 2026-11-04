@@ -70,6 +70,8 @@ pub struct NewJob {
     pub description: String,
     pub creator: String,
     pub include_assets: bool,
+    #[serde(default)]
+    pub capture: crate::capture::CaptureOptions,
 }
 
 impl NewJob {
@@ -85,7 +87,11 @@ impl NewJob {
     }
 
     pub fn validate(&self) -> anyhow::Result<()> {
-        super::web::http_url(&self.url)?;
+        self.capture.validate(&super::web::http_url(&self.url)?)?;
+        anyhow::ensure!(
+            self.kind == SourceKind::Website || self.capture.seed_urls.is_empty(),
+            "URL lists support websites; use a channel or playlist for media collections"
+        );
         anyhow::ensure!(
             !self.title.trim().is_empty() && self.title.len() <= 120,
             "Title must contain 1–120 characters"
@@ -131,6 +137,16 @@ pub struct Entry {
     pub assets: Vec<String>,
     pub media_file: Option<String>,
     #[serde(default)]
+    pub subtitles: Vec<crate::captions::SavedSubtitle>,
+    #[serde(default)]
+    pub transcript: Vec<crate::captions::Cue>,
+    #[serde(default)]
+    pub transcript_file: Option<String>,
+    #[serde(default)]
+    pub subtitle_policy: Option<String>,
+    #[serde(default)]
+    pub subtitle_error: Option<String>,
+    #[serde(default)]
     pub media_audio: Option<String>,
     #[serde(default)]
     pub thumbnail_url: Option<String>,
@@ -152,6 +168,10 @@ pub struct Resource {
     pub error: Option<String>,
     pub mime: String,
     pub dependencies: Vec<String>,
+    #[serde(default)]
+    pub etag: Option<String>,
+    #[serde(default)]
+    pub last_modified: Option<String>,
     pub size: u64,
 }
 
@@ -179,6 +199,8 @@ pub struct AssetSummary {
     pub downloaded: usize,
     pub missing: usize,
     pub omitted: usize,
+    #[serde(default)]
+    pub failed: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -205,6 +227,14 @@ pub struct Job {
     pub resources: BTreeMap<String, Resource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asset_summary: Option<AssetSummary>,
+    #[serde(default)]
+    pub refresh: Option<crate::refresh::RefreshState>,
+    #[serde(default)]
+    pub import: Option<crate::imports::ImportState>,
+    #[serde(default)]
+    pub capture_report: Option<crate::capture_report::Summary>,
+    #[serde(default)]
+    pub validation: Option<crate::capture_report::Validation>,
     pub logs: Vec<Log>,
     pub error: Option<String>,
     pub output: Option<String>,
@@ -212,6 +242,8 @@ pub struct Job {
     pub retry_at: Option<u64>,
     pub requests: u64,
     pub bytes: u64,
+    #[serde(default)]
+    pub downloaded_bytes: u64,
     #[serde(default)]
     pub progress: Progress,
 }
@@ -250,7 +282,7 @@ impl Job {
             }
         }
         for r in self.resources.values_mut() {
-            if r.state == "failed" {
+            if r.state == "failed" || r.state == "excluded" {
                 r.state = "pending".into();
                 r.error = None;
             }
@@ -319,17 +351,23 @@ impl Job {
     }
 
     pub fn can_auto_start(&self) -> bool {
-        self.auto_start_item_limit.is_some_and(|limit| {
-            !self.scan_truncated
-                && !self.entries.is_empty()
-                && self.entries.len() <= limit
-                && self.entries.iter().all(|entry| {
-                    entry.selected && entry.state == "pending" && entry.error.is_none()
-                })
-        })
+        self.refresh.is_none()
+            && self.auto_start_item_limit.is_some_and(|limit| {
+                !self.scan_truncated
+                    && !self.entries.is_empty()
+                    && self.entries.len() <= limit
+                    && self.entries.iter().all(|entry| {
+                        entry.selected && entry.state == "pending" && entry.error.is_none()
+                    })
+            })
     }
     pub fn view(mut self) -> Self {
         self.asset_summary = Some(AssetSummary {
+            failed: self
+                .resources
+                .values()
+                .filter(|resource| resource.state == "failed")
+                .count(),
             downloaded: self
                 .resources
                 .values()
@@ -346,11 +384,20 @@ impl Job {
                 .filter(|r| r.state == "skipped")
                 .count(),
         });
+        if let Some(import) = &mut self.import {
+            import.file_count = import.file_count.max(import.files.len());
+            import.files.clear();
+        }
+        if let Some(refresh) = &mut self.refresh {
+            refresh.previous.clear();
+            refresh.fingerprints.clear();
+        }
         self.queue.clear();
         self.visited.clear();
         self.resources.clear();
         for entry in &mut self.entries {
             entry.text.clear();
+            entry.transcript.clear();
             entry.assets.clear();
         }
         self

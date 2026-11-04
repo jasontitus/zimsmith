@@ -1,5 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { browserApi, browserOnly } from "./browser/client";
+import { browserApi, browserOnly, browserCommand } from "./browser/client";
 import type {
   ArchiveTemplate,
   ArchiveTemplateOption,
@@ -69,6 +69,10 @@ const bridgedApi = {
     native
       ? invoke<Job>("rebuild_job", { id, template })
       : request<Job>(`/jobs/${id}/rebuild`, { template }),
+  refresh: (id: string) =>
+    native
+      ? invoke<Job>("refresh_job", { id })
+      : request<Job>(`/jobs/${id}/refresh`, {}),
   open: async (id: string): Promise<void> => {
     if (!native)
       throw new Error(
@@ -99,7 +103,33 @@ export async function buildAvailable(id: string): Promise<Job> {
 }
 
 export async function deleteFailed(id: string): Promise<boolean> {
+  if (browserOnly) return browserCommand<boolean>("delete_failed_job", { id });
   if (!native)
     throw new Error("Deleting failed attempts requires the native app.");
   return invoke<boolean>("delete_failed_job", { id });
 }
+
+function importCommand<T>(
+  command: string,
+  args: Record<string, unknown>,
+): Promise<T> {
+  if (browserOnly) return browserCommand<T>(command, args);
+  if (!native)
+    throw new Error(
+      "Local file import requires the installed app or the browser-only build.",
+    );
+  return invoke<T>(command, args);
+}
+export const savedImports = {
+  begin: (
+    config: Config,
+    files: { path: string; size: number }[],
+    existingId: string | null,
+  ) => importCommand<Job>("begin_import", { config, files, existingId }),
+  offset: (id: string, path: string) =>
+    importCommand<number>("import_offset", { id, path }),
+  chunk: (id: string, path: string, offset: number, data: string) =>
+    importCommand<number>("import_chunk", { id, path, offset, data }),
+  finish: (id: string) => importCommand<Job>("finish_import", { id }),
+  cancel: (id: string) => importCommand<void>("cancel_import", { id }),
+};

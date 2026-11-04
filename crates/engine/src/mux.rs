@@ -328,6 +328,7 @@ mod tests {
                     description: "Generated sync test".into(),
                     creator: "Test".into(),
                     include_assets: false,
+                    capture: Default::default(),
                 };
                 let mut entry = crate::native_media::entry(
                     "O6VZaBM2Zr4",

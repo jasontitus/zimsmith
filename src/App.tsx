@@ -35,6 +35,10 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { CaptureReport } from "./CaptureReport";
+import { SavedContentImport } from "./SavedContentImport";
+import { CaptureSettings } from "./CaptureSettings";
+import { normalizedCapture } from "./capture";
 import { AndroidUpdates } from "./AndroidUpdates";
 import {
   api,
@@ -73,13 +77,20 @@ const defaults: Config = {
   creator: "Zimsmith user",
   include_assets: true,
 };
-const activeStates = ["scanning", "downloading", "packaging", "pausing"];
+const activeStates = [
+  "scanning",
+  "downloading",
+  "packaging",
+  "pausing",
+  "importing",
+];
 const defaultSettings: Settings = {
   auto_start_small_jobs: true,
   auto_start_item_limit: 100,
   archive_template: "atlas",
 };
 const labels: Record<string, string> = {
+  importing: "Importing saved files",
   scanning: "Scanning",
   review: "Ready for review",
   downloading: "Downloading",
@@ -118,6 +129,7 @@ export default function App() {
   const [selectedJob, setSelectedJob] = useState<string | null>(null);
   const [job, setJob] = useState<Job | null>(null);
   const [config, setConfig] = useState<Config>(defaults);
+  const [importResumeId, setImportResumeId] = useState<string | null>(null);
   const [editingJobId, setEditingJobId] = useState<string | null>(null);
   const [sharedLinkId, setSharedLinkId] = useState<string | null>(null);
   const [advanced, setAdvanced] = useState(false);
@@ -246,6 +258,8 @@ export default function App() {
     }
   }
   const openJob = (item: Job) => {
+    window.scrollTo(0, 0);
+    setImportResumeId(null);
     setEditingJobId(null);
     setRebuildTemplate(null);
     lastJob.current = null;
@@ -268,6 +282,7 @@ export default function App() {
     window.scrollTo(0, 0);
   };
   const newArchive = () => {
+    setImportResumeId(null);
     if (editingJobId) setConfig(defaults);
     setEditingJobId(null);
     setTab("create");
@@ -280,7 +295,11 @@ export default function App() {
   const create = () =>
     action(async () => {
       setToast("");
-      const normalized = { ...config, url: normalizeSourceUrl(config.url) };
+      const normalized = {
+        ...config,
+        url: normalizeSourceUrl(config.url),
+        capture: normalizedCapture(config),
+      };
       const result = editingJobId
         ? await api.editRetry(editingJobId, normalized)
         : await api.create(normalized);
@@ -314,7 +333,7 @@ export default function App() {
       setToast(
         cleaned
           ? "Failed attempt and cached files deleted."
-          : "Failed attempt removed. Remaining cached files will be cleaned up on next launch.",
+          : "Failed attempt removed. Cached file cleanup will be retried on next launch.",
       );
     } catch (error) {
       setError(friendlyError(error));
@@ -567,7 +586,15 @@ export default function App() {
                     : "Turn websites and video collections into searchable offline archives."}
                 </p>
               </div>
-              <div className="create-layout">
+              {!editingJobId && (native || browserOnly) && (
+                <SavedContentImport
+                  config={config}
+                  resumeId={importResumeId}
+                  onCreated={openJob}
+                  onBusyChange={setBusy}
+                />
+              )}
+              <div className="create-layout" hidden={!!importResumeId}>
                 <section className="card source-card">
                   <div className="card-heading">
                     <span className="step-chip">01</span>
@@ -789,6 +816,10 @@ export default function App() {
                             </p>
                           </div>
                         </div>
+                        <CaptureSettings
+                          config={config}
+                          onChange={(value) => update("capture", value)}
+                        />
                         <label htmlFor="description">Short description</label>
                         <input
                           id="description"
@@ -1123,7 +1154,9 @@ export default function App() {
                         : "MEDIA COLLECTION"}
                     </div>
                     <h1>{job.config.title}</h1>
-                    <p className="source-address">{job.config.url}</p>
+                    <p className="source-address">
+                      {job.import ? "Imported local files" : job.config.url}
+                    </p>
                   </div>
                   <Status status={job.status} />
                 </div>
@@ -1173,6 +1206,28 @@ export default function App() {
                 </div>
               )}
               <JobProgress job={job} />
+              {job.import && !job.import.finished && (
+                <section className="panel rebuild-panel">
+                  <div>
+                    <h2>Continue this saved-file import</h2>
+                    <p>
+                      Reselect the original files or folder to reuse uploaded
+                      chunks.
+                    </p>
+                  </div>
+                  <button
+                    className="button secondary"
+                    disabled={busy}
+                    onClick={() => {
+                      setImportResumeId(job.id);
+                      setConfig(job.config);
+                      setTab("create");
+                    }}
+                  >
+                    Reselect files to continue
+                  </button>
+                </section>
+              )}
               {native &&
                 job.config.kind === "website" &&
                 job.phase === "download" &&
@@ -1210,7 +1265,7 @@ export default function App() {
                     </button>
                   </section>
                 )}
-              {native && job.status === "failed" && (
+              {(native || browserOnly) && job.status === "failed" && (
                 <section
                   className="panel rebuild-panel"
                   aria-labelledby="delete-attempt-title"
@@ -1233,13 +1288,15 @@ export default function App() {
                   </button>
                 </section>
               )}
-              {job.retry_at && (
-                <div className="alert warning">
-                  <Clock3 size={18} />
-                  Respecting the server’s cooldown. Retry after{" "}
-                  {new Date(job.retry_at * 1000).toLocaleTimeString()}.
-                </div>
-              )}
+              {job.retry_at &&
+                job.retry_at > Date.now() / 1000 &&
+                job.status !== "completed" && (
+                  <div className="alert warning">
+                    <Clock3 size={18} />
+                    Server requests may resume after{" "}
+                    {new Date(job.retry_at * 1000).toLocaleTimeString()}.
+                  </div>
+                )}
               {job.status === "completed" && (
                 <div className="completed-banner">
                   <span>
@@ -1281,6 +1338,7 @@ export default function App() {
                   </div>
                 </div>
               )}
+              <CaptureReport job={job} />
               {native &&
                 job.config.kind === "media" &&
                 /^https?:\/\/(?:www\.|m\.|music\.)?(?:youtube\.com|youtu\.be)(?:\/|$)/i.test(
@@ -1374,6 +1432,81 @@ export default function App() {
                   </div>
                 </section>
               )}
+              {job.status === "completed" &&
+                !job.import &&
+                (!browserOnly || job.config.kind === "website") && (
+                  <section
+                    className="panel rebuild-panel"
+                    aria-labelledby="refresh-title"
+                  >
+                    <div>
+                      <h2 id="refresh-title">Refresh this collection</h2>
+                      <p>
+                        Rescan the source and review what’s new, changed, or no
+                        longer found. Pages are compared now; assets are
+                        revalidated during download. Saved YouTube tracks are
+                        reused. The existing ZIM stays intact until its
+                        replacement is ready.
+                      </p>
+                    </div>
+                    <button
+                      className="button secondary"
+                      disabled={busy}
+                      onClick={() =>
+                        void action(async () => {
+                          await api.refresh(job.id);
+                          setToast(
+                            "Rescanning the collection. Review the changes before downloading.",
+                          );
+                        })
+                      }
+                    >
+                      <RefreshCw size={17} /> Check for changes
+                    </button>
+                  </section>
+                )}
+              {job.refresh?.compared && (
+                <section
+                  className="panel"
+                  aria-labelledby="refresh-changes-title"
+                >
+                  <h2 id="refresh-changes-title">
+                    Changes since the previous capture
+                  </h2>
+                  <p>
+                    {["new", "changed", "unchanged", "unavailable", "not_seen"]
+                      .map(
+                        (kind) =>
+                          `${job.refresh!.changes.filter((change) => change.kind === kind).length} ${kind === "not_seen" ? "not seen" : kind}`,
+                      )
+                      .join(" · ")}
+                  </p>
+                  {!job.refresh.complete && (
+                    <p className="alert warning">
+                      This scan was incomplete. Items not seen may still exist;
+                      don’t treat them as confirmed removals.
+                    </p>
+                  )}
+                  <details>
+                    <summary>View changes</summary>
+                    <ul>
+                      {job.refresh.changes
+                        .filter((change) => change.kind !== "unchanged")
+                        .map((change) => (
+                          <li key={change.url}>
+                            <strong>
+                              {change.kind === "not_seen"
+                                ? "Not seen in this scan"
+                                : change.kind}
+                            </strong>
+                            : {change.title}
+                            <p className="source-address">{change.url}</p>
+                          </li>
+                        ))}
+                    </ul>
+                  </details>
+                </section>
+              )}
               <div className="stat-grid">
                 <Stat
                   title="Discovered"
@@ -1414,15 +1547,16 @@ export default function App() {
                     </p>
                   </div>
                   <div className="job-actions">
-                    {["failed", "paused"].includes(job.status) && (
-                      <button
-                        className="button secondary"
-                        disabled={busy}
-                        onClick={() => editCrawl(job)}
-                      >
-                        <Pencil size={16} /> Edit crawl
-                      </button>
-                    )}
+                    {["failed", "paused"].includes(job.status) &&
+                      !job.import && (
+                        <button
+                          className="button secondary"
+                          disabled={busy}
+                          onClick={() => editCrawl(job)}
+                        >
+                          <Pencil size={16} /> Edit crawl
+                        </button>
+                      )}
                     {activeStates.includes(job.status) ? (
                       <button
                         className="button secondary"
@@ -1433,7 +1567,8 @@ export default function App() {
                         Pause
                       </button>
                     ) : (
-                      ["paused", "failed"].includes(job.status) && (
+                      ["paused", "failed"].includes(job.status) &&
+                      (!job.import || job.import.finished) && (
                         <button
                           className="button secondary"
                           disabled={busy}

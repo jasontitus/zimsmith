@@ -90,6 +90,39 @@ export class Store {
         reject(tx.error || new Error("Unable to save browser checkpoint."));
     });
   }
+  async cleanupOrphans(live: Set<string>) {
+    const root = this.root as FileSystemDirectoryHandle & {
+      entries(): AsyncIterableIterator<[string, FileSystemHandle]>;
+    };
+    try {
+      for await (const [name, handle] of root.entries()) {
+        if (
+          handle.kind === "directory" &&
+          /^[0-9a-f-]{36}$/i.test(name) &&
+          !live.has(name)
+        )
+          await this.root
+            .removeEntry(name, { recursive: true })
+            .catch(() => {});
+      }
+    } catch {
+      /* Retry failed cleanup on the next launch. */
+    }
+  }
+  async removeJob(id: string) {
+    await new Promise<void>((resolve, reject) => {
+      const tx = this.db.transaction("jobs", "readwrite");
+      tx.objectStore("jobs").delete(id);
+      tx.oncomplete = () => resolve();
+      tx.onerror = tx.onabort = () => reject(tx.error);
+    });
+    try {
+      await this.root.removeEntry(id, { recursive: true });
+      return true;
+    } catch {
+      return false;
+    }
+  }
   async dir(id: string) {
     return this.root.getDirectoryHandle(id, { create: true });
   }

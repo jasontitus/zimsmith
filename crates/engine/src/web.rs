@@ -168,7 +168,12 @@ impl<'a> Network<'a> {
         delay: Duration,
         limit: u64,
         robots: bool,
+        asset: bool,
+        conditional: reqwest::header::HeaderMap,
     ) -> Result<(StatusCode, reqwest::header::HeaderMap, Vec<u8>)> {
+        if self.record.remaining_download().await == Some(0) {
+            return Err(crate::capture::BudgetReached.into());
+        }
         wait_saved_cooldown(self.record).await?;
         let attempts = if robots { 1 } else { 5 };
         for attempt in 0..attempts {
@@ -186,7 +191,7 @@ impl<'a> Network<'a> {
                 })
                 .await?;
             pace(url, delay).await;
-            let request = self.client.get(url.clone());
+            let request = self.client.get(url.clone()).headers(conditional.clone());
             let request = if robots {
                 request.timeout(self.robots_timeout)
             } else {
@@ -230,6 +235,26 @@ impl<'a> Network<'a> {
                         self.record.change(|j| j.retry_at = None).await?;
                         continue;
                     }
+                    if asset && status.is_success() {
+                        let mime = headers
+                            .get("content-type")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("");
+                        if !self.record.job.lock().await.config.capture.asset_mime(mime) {
+                            return Err(crate::capture::Excluded(format!(
+                                "Excluded by file-type settings: {url}"
+                            ))
+                            .into());
+                        }
+                    }
+                    if self
+                        .record
+                        .remaining_download()
+                        .await
+                        .is_some_and(|remaining| response.content_length().unwrap_or(0) > remaining)
+                    {
+                        return Err(crate::capture::BudgetReached.into());
+                    }
                     anyhow::ensure!(
                         response.content_length().unwrap_or(0) <= limit,
                         "Resource exceeds {} MB limit: {}",
@@ -245,6 +270,7 @@ impl<'a> Network<'a> {
                             body.len() as u64 + chunk.len() as u64 <= limit,
                             "Resource exceeded size limit: {url}"
                         );
+                        self.record.consume_download(chunk.len() as u64).await?;
                         body.extend_from_slice(&chunk);
                         if last_update.elapsed() >= Duration::from_millis(500) {
                             self.record
@@ -348,8 +374,16 @@ impl<'a> Network<'a> {
             let mut robots_url = Url::parse(&format!("{origin}/robots.txt"))?;
             let mut result = None;
             for _ in 0..=5 {
-                let (status, headers, body) =
-                    self.raw(&robots_url, baseline, 1024 * 1024, true).await?;
+                let (status, headers, body) = self
+                    .raw(
+                        &robots_url,
+                        baseline,
+                        1024 * 1024,
+                        true,
+                        false,
+                        Default::default(),
+                    )
+                    .await?;
                 if status.is_redirection() {
                     let location = headers
                         .get("location")
@@ -427,13 +461,95 @@ impl<'a> Network<'a> {
     async fn get_with_purpose(&mut self, url: &Url, asset: bool) -> Result<(Url, String, Vec<u8>)> {
         let mut url = url.clone();
         for _ in 0..=8 {
+            if asset && !self.record.job.lock().await.config.capture.asset_url(&url) {
+                return Err(crate::capture::Excluded(format!(
+                    "Excluded by capture settings: {url}"
+                ))
+                .into());
+            }
             let baseline = if asset && is_static_cdn(&url) {
                 Duration::ZERO
             } else {
                 self.delay
             };
             let delay = self.check_robots(&url, baseline).await?;
-            let (status, headers, body) = self.raw(&url, delay, self.cap, false).await?;
+            let cached = if asset {
+                self.record
+                    .job
+                    .lock()
+                    .await
+                    .resources
+                    .get(url.as_str())
+                    .cloned()
+            } else {
+                None
+            };
+            let mut conditional = reqwest::header::HeaderMap::new();
+            if let Some(resource) = &cached {
+                if !self
+                    .record
+                    .job
+                    .lock()
+                    .await
+                    .config
+                    .capture
+                    .asset_mime(&resource.mime)
+                {
+                    return Err(
+                        crate::capture::Excluded("Excluded by file-type settings".into()).into(),
+                    );
+                }
+                if tokio::fs::metadata(self.record.dir.join("cache").join(&resource.path))
+                    .await
+                    .is_ok_and(|m| m.is_file() && m.len() == resource.size && m.len() <= self.cap)
+                {
+                    if let Some(value) = resource.etag.as_ref().and_then(|s| s.parse().ok()) {
+                        conditional.insert(reqwest::header::IF_NONE_MATCH, value);
+                    }
+                    if let Some(value) =
+                        resource.last_modified.as_ref().and_then(|s| s.parse().ok())
+                    {
+                        conditional.insert(reqwest::header::IF_MODIFIED_SINCE, value);
+                    }
+                }
+            }
+            let (status, headers, body) = self
+                .raw(&url, delay, self.cap, false, asset, conditional)
+                .await?;
+            if status == StatusCode::NOT_MODIFIED {
+                let resource = cached.context("Server returned 304 without a cached asset")?;
+                let body =
+                    tokio::fs::read(self.record.dir.join("cache").join(&resource.path)).await?;
+                anyhow::ensure!(
+                    body.len() as u64 == resource.size && resource.size <= self.cap,
+                    "Cached asset is incomplete or exceeds the file limit"
+                );
+                let base = tokio::fs::read_to_string(
+                    self.record
+                        .dir
+                        .join("cache")
+                        .join(format!("{}.url", resource.path)),
+                )
+                .await
+                .unwrap_or_else(|_| url.to_string());
+                return Ok((http_url(&base)?, resource.mime, body));
+            }
+            if asset && status.is_success() {
+                self.record
+                    .change(|j| {
+                        if let Some(resource) = j.resources.get_mut(url.as_str()) {
+                            resource.etag = headers
+                                .get("etag")
+                                .and_then(|h| h.to_str().ok())
+                                .map(str::to_string);
+                            resource.last_modified = headers
+                                .get("last-modified")
+                                .and_then(|h| h.to_str().ok())
+                                .map(str::to_string);
+                        }
+                    })
+                    .await?;
+            }
             if status.is_redirection() {
                 url = resolve(
                     &url,
@@ -539,18 +655,26 @@ pub fn inspect(html: &str, base: &Url) -> PageData {
         .select(&select("a[href]"))
         .filter_map(|e| resolve(&base, e.value().attr("href")?))
         .filter(|u| {
-            let ext = u.path().rsplit('.').next().unwrap_or("").to_lowercase();
-            ![
-                "png", "jpg", "jpeg", "webp", "gif", "svg", "mp4", "mp3", "zip", "pdf", "css",
-                "js", "xml", "ico",
-            ]
-            .contains(&ext.as_str())
+            !crate::capture::linked_asset(u)
+                && !["js", "xml"].contains(
+                    &u.path()
+                        .rsplit('.')
+                        .next()
+                        .unwrap_or("")
+                        .to_ascii_lowercase()
+                        .as_str(),
+                )
         })
         .map(|u| u.to_string())
         .collect();
-    let mut assets = Vec::new();
+    let mut assets: Vec<_> = document
+        .select(&select("a[href]"))
+        .filter_map(|e| resolve(&base, e.value().attr("href")?))
+        .filter(crate::capture::linked_asset)
+        .map(|u| u.to_string())
+        .collect();
     for element in document.select(&select(
-        "img, source, video[src], audio[src], video[poster], link[href]",
+        "img, source, track[src], video[src], audio[src], video[poster], link[href]",
     )) {
         if element.value().name() == "link"
             && !["stylesheet", "icon", "shortcut icon"]
@@ -604,7 +728,12 @@ pub async fn scan(record: &Record) -> Result<()> {
         if snapshot.entries.len() >= snapshot.config.max_items {
             break;
         }
-        let mut root = http_url(&snapshot.config.url)?;
+        let page_url = http_url(&page.url)?;
+        let mut root = std::iter::once(&snapshot.config.url)
+            .chain(&snapshot.config.capture.seed_urls)
+            .filter_map(|u| http_url(u).ok())
+            .find(|u| in_scope(u, &page_url))
+            .context("Page is outside the starting URL scopes")?;
         record
             .progress(
                 format!("Scanning {}", page.url),
@@ -616,15 +745,25 @@ pub async fn scan(record: &Record) -> Result<()> {
         let result = network.get(&http_url(&page.url)?).await;
         match result {
             Ok((final_url, mime, body)) => {
-                let adopt = snapshot.visited.is_empty()
-                    && page.url == snapshot.config.url
+                let adopt = page.depth == 0
+                    && page.url == root.as_str()
                     && final_url != root
                     && canonical_start_redirect(&root, &final_url);
                 if adopt {
                     root = final_url.clone();
                     record
                         .change(|j| {
-                            j.config.url = final_url.to_string();
+                            if page.url == j.config.url {
+                                j.config.url = final_url.to_string();
+                            } else if let Some(seed) = j
+                                .config
+                                .capture
+                                .seed_urls
+                                .iter_mut()
+                                .find(|u| **u == page.url)
+                            {
+                                *seed = final_url.to_string();
+                            }
                             j.log(
                                 "info",
                                 format!("Using the website's canonical URL: {final_url}"),
@@ -671,8 +810,9 @@ pub async fn scan(record: &Record) -> Result<()> {
                                     break;
                                 }
                                 if http_url(&link)
-                                    .map(|u| in_scope(&root, &u))
+                                    .map(|u| j.config.contains_url(&u))
                                     .unwrap_or(false)
+                                    && j.config.page_allowed(&link)
                                     && !j.visited.contains(&link)
                                     && !j.queue.iter().any(|p| p.url == link)
                                 {
@@ -684,12 +824,13 @@ pub async fn scan(record: &Record) -> Result<()> {
                             }
                         }
                         j.log("info", format!("Discovered {}", data.title));
+                        let selected = j.config.page_allowed(&entry_url);
                         j.entries.push(Entry {
                             id,
                             url: entry_url,
                             title: data.title,
                             depth: page.depth,
-                            selected: true,
+                            selected,
                             state: "pending".into(),
                             size: Some(body.len() as u64),
                             duration: None,
@@ -697,6 +838,11 @@ pub async fn scan(record: &Record) -> Result<()> {
                             text: data.text,
                             assets: data.assets,
                             media_file: None,
+                            subtitles: vec![],
+                            transcript: vec![],
+                            transcript_file: None,
+                            subtitle_policy: None,
+                            subtitle_error: None,
                             media_audio: None,
                             thumbnail_url: None,
                             thumbnail_file: None,
@@ -724,6 +870,11 @@ pub async fn scan(record: &Record) -> Result<()> {
                             text: String::new(),
                             assets: vec![],
                             media_file: None,
+                            subtitles: vec![],
+                            transcript: vec![],
+                            transcript_file: None,
+                            subtitle_policy: None,
+                            subtitle_error: None,
                             media_audio: None,
                             thumbnail_url: None,
                             thumbnail_file: None,
@@ -755,10 +906,11 @@ pub async fn scan(record: &Record) -> Result<()> {
     Ok(())
 }
 
-pub async fn download(record: &Record) -> Result<()> {
-    let mut network = Network::new(record).await?;
-    let job = record.job.lock().await.clone();
+fn needed_resources(job: &Job) -> std::collections::BTreeSet<String> {
     let mut needed = std::collections::BTreeSet::new();
+    if !job.config.include_assets {
+        return needed;
+    }
     let mut todo: Vec<_> = job
         .entries
         .iter()
@@ -769,12 +921,27 @@ pub async fn download(record: &Record) -> Result<()> {
         if !needed.insert(url.clone()) {
             continue;
         }
-        if let Some(resource) = job.resources.get(&url) {
+        if let Some(resource) = job.resources.get(&url).filter(|r| r.state == "done") {
             todo.extend(resource.dependencies.clone());
         }
     }
+    needed
+}
+
+pub async fn download(record: &Record) -> Result<()> {
+    let mut network = Network::new(record).await?;
+    let job = record.job.lock().await.clone();
     record
-        .change(|j| j.resources.retain(|url, _| needed.contains(url)))
+        .change(|j| {
+            for resource in j.resources.values_mut() {
+                if !http_url(&resource.url).is_ok_and(|u| j.config.capture.asset_url(&u))
+                    || !j.config.capture.asset_mime(&resource.mime)
+                {
+                    resource.state = "excluded".into();
+                    resource.error = Some("Excluded by capture settings".into());
+                }
+            }
+        })
         .await?;
     if job.config.include_assets {
         record
@@ -790,14 +957,14 @@ pub async fn download(record: &Record) -> Result<()> {
             })
             .await?;
         loop {
-            let next = record
-                .job
-                .lock()
-                .await
-                .resources
-                .values()
-                .find(|r| r.state == "pending")
-                .cloned();
+            let next = {
+                let job = record.job.lock().await;
+                let needed = needed_resources(&job);
+                job.resources
+                    .values()
+                    .find(|r| r.state == "pending" && needed.contains(&r.url))
+                    .cloned()
+            };
             let Some(resource) = next else {
                 break;
             };
@@ -852,7 +1019,12 @@ pub async fn download(record: &Record) -> Result<()> {
                     record
                         .change(|j| {
                             let r = j.resources.get_mut(&resource.url).unwrap();
-                            r.state = "failed".into();
+                            r.state = if error.is::<crate::capture::Excluded>() {
+                                "excluded"
+                            } else {
+                                "failed"
+                            }
+                            .into();
                             r.error = Some(message.clone());
                             j.log("warning", message);
                         })
@@ -863,6 +1035,8 @@ pub async fn download(record: &Record) -> Result<()> {
     }
     record
         .change(|j| {
+            let needed = needed_resources(j);
+            j.resources.retain(|url, _| needed.contains(url));
             for e in &mut j.entries {
                 if e.selected {
                     e.state = "done".into();
@@ -907,6 +1081,8 @@ fn add_resource(job: &mut Job, url: &str) {
             error: None,
             mime: String::new(),
             dependencies: vec![],
+            etag: None,
+            last_modified: None,
             size: 0,
         }
     });
@@ -980,6 +1156,7 @@ mod tests {
             job: Mutex::new(job),
             stop: Default::default(),
             running: Default::default(),
+            import_cancel: Default::default(),
             dir: temp.path().to_owned(),
         };
         for _ in 0..3 {
@@ -1137,6 +1314,7 @@ mod tests {
             job: Mutex::new(job),
             stop: Default::default(),
             running: Default::default(),
+            import_cancel: Default::default(),
             dir: temp.path().to_owned(),
         };
         let mut network = Network::new(&record).await.unwrap();

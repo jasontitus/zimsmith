@@ -1,3 +1,5 @@
+import { version as appVersion } from "../../package.json";
+import { normalizedCapture, pageAllowed, linkedAsset } from "../capture";
 import type { ArchiveTemplate, Config, Job, Settings } from "../types";
 import { normalizeSourceUrl, isNativeMediaUrl } from "../source";
 import {
@@ -18,9 +20,17 @@ import {
   rewritePage,
   templates,
 } from "./content";
-import { Network, Paused } from "./network";
+import { Network, Paused, ExcludedAsset } from "./network";
+import {
+  approvedFiles,
+  diskName,
+  prepareImport,
+  uploadChunk,
+  type ImportFile,
+} from "./imports";
 import { readFile, Store, syncFile } from "./storage";
-import { writeZim, type ZimItem } from "./zim";
+import { captureReport } from "./report";
+import { writeZim, verifyZim, type ZimItem } from "./zim";
 
 export class BrowserEngine {
   private jobs = new Map<string, BrowserJob>();
@@ -60,7 +70,13 @@ export class BrowserEngine {
     for (const job of await store.allJobs()) {
       if (job.schema !== 1) continue;
       if (
-        ["scanning", "downloading", "packaging", "pausing"].includes(job.status)
+        [
+          "scanning",
+          "downloading",
+          "packaging",
+          "pausing",
+          "importing",
+        ].includes(job.status)
       ) {
         job.status = "paused";
         engine.log(
@@ -72,6 +88,7 @@ export class BrowserEngine {
       }
       engine.jobs.set(job.id, job);
     }
+    await store.cleanupOrphans(new Set(engine.jobs.keys()));
     return engine;
   }
   private log(job: BrowserJob, level: string, message: string) {
@@ -93,12 +110,16 @@ export class BrowserEngine {
   }
   private idle(job: BrowserJob) {
     if (
-      ["scanning", "downloading", "packaging", "pausing"].includes(job.status)
+      ["scanning", "downloading", "packaging", "pausing", "importing"].includes(
+        job.status,
+      )
     )
       throw new Error("Pause this job before changing it.");
   }
   private view(job: BrowserJob): Job {
     const {
+      import: _import,
+      refresh: _refresh,
       resources: _,
       queue: _q,
       visited: _v,
@@ -108,6 +129,22 @@ export class BrowserEngine {
     } = job;
     return {
       ...view,
+      import: job.import
+        ? {
+            finished: job.import.finished,
+            file_count: Math.max(
+              job.import.file_count,
+              job.import.files?.length || 0,
+            ),
+          }
+        : null,
+      refresh: job.refresh
+        ? {
+            compared: job.refresh.compared,
+            complete: job.refresh.complete,
+            changes: job.refresh.changes,
+          }
+        : null,
       entries: job.entries.map(
         ({ text: _t, file: _f, media: _m, mime: _type, ...entry }) => entry,
       ),
@@ -121,7 +158,7 @@ export class BrowserEngine {
     switch (command) {
       case "capabilities":
         return {
-          version: "0.1.0",
+          version: appVersion,
           platform: "browser",
           local_execution: true,
           yt_dlp: {
@@ -168,12 +205,21 @@ export class BrowserEngine {
       case "pause_job": {
         const job = this.job(id);
         if (
-          !["scanning", "downloading", "packaging", "pausing"].includes(
-            job.status,
-          )
+          ![
+            "scanning",
+            "downloading",
+            "packaging",
+            "pausing",
+            "importing",
+          ].includes(job.status)
         )
           return this.view(job);
-        job.status = this.controls.has(id) ? "pausing" : "paused";
+        job.status =
+          job.phase === "import"
+            ? "paused"
+            : this.controls.has(id)
+              ? "pausing"
+              : "paused";
         this.controls.get(id)?.abort();
         await this.save(job);
         return this.view(job);
@@ -181,6 +227,10 @@ export class BrowserEngine {
       case "resume_job": {
         const job = this.job(id);
         this.idle(job);
+        if (job.import && !job.import.finished)
+          throw new Error(
+            "Reselect the same files in Import to continue this upload.",
+          );
         if (["completed", "review"].includes(job.status)) return this.view(job);
         job.error = null;
         job.status =
@@ -196,16 +246,29 @@ export class BrowserEngine {
       case "edit_job": {
         const job = this.job(id);
         this.idle(job);
+        if (job.import)
+          throw new Error(
+            "Rebuild imported collections, or start a new import to add files.",
+          );
         if (!["failed", "paused"].includes(job.status))
           throw new Error("Only failed or paused crawls can be edited.");
         const config = this.config(args.config as Config);
-        const reset = (
-          ["url", "kind", "max_items", "max_depth", "include_assets"] as const
-        ).some((key) => config[key] !== job.config[key]);
+        const reset =
+          JSON.stringify(config.capture?.seed_urls) !==
+            JSON.stringify(job.config.capture?.seed_urls) ||
+          JSON.stringify(config.capture?.include_urls) !==
+            JSON.stringify(job.config.capture?.include_urls) ||
+          JSON.stringify(config.capture?.exclude_urls) !==
+            JSON.stringify(job.config.capture?.exclude_urls) ||
+          (
+            ["url", "kind", "max_items", "max_depth", "include_assets"] as const
+          ).some((key) => config[key] !== job.config[key]);
         job.config = config;
         if (reset) {
           job.entries = [];
-          job.queue = [{ url: config.url, depth: 0 }];
+          job.queue = [config.url, ...(config.capture?.seed_urls || [])].map(
+            (url) => ({ url, depth: 0 }),
+          );
           job.visited = [];
           job.phase = "scan";
           job.scan_truncated = false;
@@ -261,6 +324,175 @@ export class BrowserEngine {
         this.launch(id);
         return this.view(job);
       }
+      case "delete_failed_job": {
+        const job = this.job(id);
+        if (
+          job.status !== "failed" ||
+          this.controls.has(id) ||
+          this.queue.includes(id)
+        )
+          throw new Error("Only stopped failed attempts can be deleted.");
+        const cleaned = await this.store.removeJob(id);
+        this.jobs.delete(id);
+        return cleaned;
+      }
+      case "begin_import": {
+        const config = this.config({
+          ...(args.config as Config),
+          url: "https://local-import.invalid/",
+          kind: "website",
+        });
+        const files = approvedFiles(args.files as ImportFile[], config);
+        if (args.existingId) {
+          const job = this.job(String(args.existingId));
+          this.idle(job);
+          if (
+            !job.import ||
+            job.import.finished ||
+            JSON.stringify(job.import.files) !== JSON.stringify(files)
+          )
+            throw new Error(
+              "Reselect the same files and folder paths to continue.",
+            );
+          job.config = config;
+          job.status = "importing";
+          job.error = null;
+          await this.save(job);
+          return this.view(job);
+        }
+        const created = await this.create(config, false),
+          job = this.job(created.id);
+        job.import = { files, finished: false, file_count: files.length };
+        await this.save(job);
+        return this.view(job);
+      }
+      case "import_offset": {
+        const job = this.job(id),
+          path = String(args.path);
+        if (
+          !job.import?.files?.some((file) => file.path === path) ||
+          job.import.finished
+        )
+          throw new Error("Unapproved import path.");
+        try {
+          return (
+            await readFile(await this.store.dir(id), await diskName(path))
+          ).size;
+        } catch {
+          return 0;
+        }
+      }
+      case "import_chunk": {
+        if (this.controls.has(id))
+          throw new Error("Import files are already being prepared.");
+        const job = this.job(id),
+          data = String(args.data);
+        if (data.length > 349528)
+          throw new Error("Import chunk exceeds 256 KB.");
+        const size = await uploadChunk(
+          job,
+          this.store,
+          String(args.path),
+          Number(args.offset),
+          Uint8Array.from(atob(data), (c) => c.charCodeAt(0)),
+        );
+        job.progress = {
+          label: `Importing ${args.path}`,
+          completed: 0,
+          total: null,
+          unit: "files",
+          received: size,
+          expected:
+            job.import?.files?.find((file) => file.path === args.path)?.size ||
+            null,
+          updated_at: now(),
+        };
+        await this.save(job);
+        return size;
+      }
+      case "cancel_import": {
+        const job = this.job(id);
+        if (!job.import || job.import.finished)
+          throw new Error("Import is already finished.");
+        this.controls.get(id)?.abort();
+        job.status = "failed";
+        job.error =
+          "Import interrupted. Reselect the same files to continue, or delete this attempt.";
+        await this.save(job);
+        return;
+      }
+      case "finish_import": {
+        const job = this.job(id);
+        if (job.status !== "importing" || this.controls.has(id))
+          throw new Error("Import is not ready to finalize.");
+        const control = new AbortController();
+        this.controls.set(id, control);
+        try {
+          await prepareImport(job, this.store, control.signal, () =>
+            this.save(job),
+          );
+          return this.view(job);
+        } catch (error) {
+          if (this.job(id).status !== "paused") job.status = "failed";
+          job.error = String(error);
+          this.log(job, "error", job.error);
+          await this.save(job);
+          throw error;
+        } finally {
+          this.controls.delete(id);
+        }
+      }
+      case "refresh_job": {
+        const job = this.job(id);
+        this.idle(job);
+        if (
+          job.status !== "completed" ||
+          job.config.kind !== "website" ||
+          job.import
+        )
+          throw new Error(
+            "Browser refresh is available for completed website collections.",
+          );
+        const dir = await this.store.dir(id);
+        const fingerprints: Record<string, string> = {};
+        for (const entry of job.entries) {
+          if (entry.file) {
+            const file = await readFile(dir, entry.file);
+            fingerprints[entry.url] = await this.fingerprint(file);
+          }
+        }
+        job.refresh = {
+          previous: structuredClone(job.entries),
+          fingerprints,
+          compared: false,
+          complete: false,
+          changes: [],
+        };
+        // Revalidate saved assets while discovery fetches fresh HTML.
+        for (const resource of Object.values(job.resources))
+          resource.revalidate = true;
+        for (const entry of job.entries) delete job.resources[entry.url];
+        job.entries = [];
+        job.visited = [];
+        job.queue = [
+          job.config.url,
+          ...(job.config.capture?.seed_urls || []),
+        ].map((url) => ({ url, depth: 0 }));
+        job.archive_revision = (job.archive_revision || 0) + 1;
+        job.scan_truncated = false;
+        job.downloaded_bytes = 0;
+        job.error = null;
+        job.phase = "scan";
+        job.status = "scanning";
+        this.log(
+          job,
+          "info",
+          "Refreshing source pages. Review the changes before building; saved assets and the previous ZIM are retained.",
+        );
+        await this.save(job);
+        this.launch(id);
+        return this.view(job);
+      }
       case "rebuild_job": {
         const job = this.job(id);
         this.idle(job);
@@ -305,24 +537,69 @@ export class BrowserEngine {
         throw new Error(`Unsupported browser command: ${command}`);
     }
   }
+  private async fingerprint(file: File) {
+    const digest = new Uint8Array(
+      await crypto.subtle.digest("SHA-256", await file.arrayBuffer()),
+    );
+    return Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  private async compareRefresh(
+    job: BrowserJob,
+    dir: FileSystemDirectoryHandle,
+  ) {
+    const refresh = job.refresh;
+    if (!refresh || refresh.compared) return;
+    const previous = new Map(
+      refresh.previous.map((entry) => [entry.url, entry]),
+    );
+    for (const entry of job.entries) {
+      const old = previous.get(entry.url);
+      let kind = "new";
+      if (old) {
+        entry.selected = old.selected;
+        kind =
+          entry.file &&
+          refresh.fingerprints[entry.url] ===
+            (await this.fingerprint(await readFile(dir, entry.file)))
+            ? "unchanged"
+            : "changed";
+      }
+      refresh.changes.push({ url: entry.url, title: entry.title, kind });
+      previous.delete(entry.url);
+    }
+    for (const entry of previous.values())
+      refresh.changes.push({
+        url: entry.url,
+        title: entry.title,
+        kind: "not_seen",
+      });
+    refresh.compared = true;
+    refresh.complete = !job.scan_truncated;
+    refresh.previous = [];
+    refresh.fingerprints = {};
+  }
   private config(config: Config) {
     const normalized = {
       ...config,
+      capture: {
+        ...normalizedCapture(config),
+        seed_urls: normalizedCapture(config).seed_urls.map(normalizeSourceUrl),
+      },
       url: normalizeSourceUrl(config.url),
       kind: isNativeMediaUrl(config.url) ? ("media" as const) : config.kind,
     };
     validate(normalized);
     return normalized;
   }
-  private async create(input: Config) {
+  private async create(input: Config, start = true) {
     const config = this.config(input),
       settings = (await this.call("get_settings")) as Settings;
     const job: BrowserJob = {
       schema: 1,
       id: crypto.randomUUID(),
       config,
-      status: "scanning",
-      phase: "scan",
+      status: start ? "scanning" : "importing",
+      phase: start ? "scan" : "import",
       archive_template: settings.archive_template,
       archive_revision: 0,
       auto_start_item_limit: settings.auto_start_small_jobs
@@ -339,7 +616,9 @@ export class BrowserEngine {
       retry_at: null,
       requests: 0,
       bytes: 0,
-      queue: [{ url: config.url, depth: 0 }],
+      queue: [config.url, ...(config.capture?.seed_urls || [])]
+        .filter((url, index, all) => all.indexOf(url) === index)
+        .map((url) => ({ url, depth: 0 })),
       visited: [],
       resources: {},
     };
@@ -350,7 +629,7 @@ export class BrowserEngine {
     );
     this.jobs.set(job.id, job);
     await this.save(job);
-    this.launch(job.id);
+    if (start) this.launch(job.id);
     return this.view(job);
   }
   private launch(id: string) {
@@ -479,7 +758,7 @@ export class BrowserEngine {
             text: page.text,
             file: receipt.file,
             depth: next.depth,
-            selected: true,
+            selected: pageAllowed(job.config, next.url),
             state: "pending",
             size: receipt.size,
             duration: null,
@@ -495,7 +774,11 @@ export class BrowserEngine {
                 break;
               }
               if (
-                inScope(url, job.config.url) &&
+                [job.config.url, ...(job.config.capture?.seed_urls || [])].some(
+                  (root) => inScope(url, root),
+                ) &&
+                pageAllowed(job.config, url) &&
+                !linkedAsset(url) &&
                 !visited.has(url) &&
                 !job.queue.some((q) => q.url === url) &&
                 !/\.(pdf|zip|png|jpe?g|gif|webp|svg|mp4|mp3|webm|m4a|css|js)(?:$|\?)/i.test(
@@ -515,7 +798,13 @@ export class BrowserEngine {
         "info",
         `Found ${job.entries.length} items${job.scan_truncated ? "; the scan limit was reached, so review is required" : ""}.`,
       );
+      await this.compareRefresh(job, dir);
       if (
+        !job.refresh &&
+        job.entries.every(
+          (entry) =>
+            entry.selected && entry.state === "pending" && !entry.error,
+        ) &&
         job.auto_start_item_limit !== null &&
         job.entries.length <= job.auto_start_item_limit &&
         !job.scan_truncated
@@ -583,6 +872,7 @@ export class BrowserEngine {
       await this.save(job);
     }
     if (job.phase !== "package") return;
+    job.omissions = {};
     const items = new Map<string, ZimItem>();
     const add = (
       path: string,
@@ -606,7 +896,22 @@ export class BrowserEngine {
         throw new Error(
           "The linked-asset limit was reached. Disable linked assets or use a smaller crawl.",
         );
-      const receipt = await net.download(url, undefined, true);
+      let receipt;
+      try {
+        if (job.import && !job.resources[url]?.done)
+          throw new ExcludedAsset("Not available in the saved-file import");
+        receipt = await net.download(url, undefined, true);
+      } catch (error) {
+        if (!(error instanceof ExcludedAsset)) throw error;
+        (job.omissions ||= {})[url] = error.message;
+        paths.set(url, "");
+        this.log(
+          job,
+          "info",
+          `Excluded asset by capture settings: ${new URL(url).pathname}`,
+        );
+        return "";
+      }
       if (receipt.mime === "text/html")
         throw new Error(
           `A linked asset returned HTML: ${new URL(url).pathname}`,
@@ -674,6 +979,15 @@ export class BrowserEngine {
           entry.title,
         );
     }
+    const report = await captureReport(job, dir, paths);
+    job.capture_report = report.summary;
+    add("capture-report.html", "text/html", report.html, "Capture report");
+    add(
+      "capture-report.json",
+      "application/json",
+      report.json,
+      "Capture report data",
+    );
     add("index.html", "text/html", renderIndex(job), job.config.title);
     for (const item of await bundledAssets())
       add(item.path, item.mime, item.content);
@@ -687,7 +1001,7 @@ export class BrowserEngine {
       Publisher: "Zimsmith",
       Language: job.config.language,
       Date: new Date().toISOString().slice(0, 10),
-      Source: job.config.url,
+      Source: job.import ? "Local saved content" : job.config.url,
       Scraper: "Zimsmith browser 0.1",
       Counter: Object.entries(counts)
         .map(([mime, n]) => `${mime}=${n}`)
@@ -734,6 +1048,22 @@ export class BrowserEngine {
             updated_at: now(),
           };
           job.updated_at = now();
+          await this.save(job, false);
+        },
+      );
+      job.validation = await verifyZim(
+        file,
+        () => net.check(),
+        async (done, total) => {
+          job.progress = {
+            label: "Verifying finished ZIM checksum and directory",
+            completed: done,
+            total,
+            unit: "bytes",
+            received: 0,
+            expected: null,
+            updated_at: now(),
+          };
           await this.save(job, false);
         },
       );

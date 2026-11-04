@@ -22,13 +22,21 @@ export function JobProgress({
   }, []);
   if (["completed", "review"].includes(job.status)) return null;
   const progress = job.progress;
-  const running = ["scanning", "downloading", "packaging", "pausing"].includes(
-    job.status,
-  );
-  const waiting = Boolean(job.retry_at && job.retry_at > now);
+  const running = [
+    "scanning",
+    "downloading",
+    "packaging",
+    "pausing",
+    "importing",
+  ].includes(job.status);
+  const waiting =
+    running &&
+    job.phase !== "package" &&
+    Boolean(job.retry_at && job.retry_at > now);
   const scan = job.phase === "scan";
   const selected = job.entries.filter((entry) => entry.selected);
   const done = selected.filter((entry) => entry.state === "done").length;
+  const failedAssets = job.asset_summary?.failed || 0;
   const failed = job.entries.filter((entry) =>
     ["failed", "scan_failed"].includes(entry.state),
   ).length;
@@ -75,11 +83,13 @@ export function JobProgress({
       <div className="progress-heading">
         <Icon size={18} className={running && !waiting ? "spin" : undefined} />
         <strong>
-          {scan
-            ? "Scanning source"
-            : job.phase === "package"
-              ? "Building archive"
-              : "Downloading collection"}
+          {job.phase === "import"
+            ? "Importing saved files"
+            : scan
+              ? "Scanning source"
+              : job.phase === "package"
+                ? "Building archive"
+                : "Downloading collection"}
         </strong>
         <span>
           {percent === null
@@ -122,13 +132,21 @@ export function JobProgress({
             )}
           </div>
         )}
+      {!compact && running && !waiting && elapsed >= 45 && (
+        <p className="alert warning">
+          No new activity for {elapsed}s. The current step may be stalled. Pause
+          and resume to retry from saved checkpoints.
+        </p>
+      )}
       {!compact && (
         <div className="progress-footer">
           <span>
             {job.requests} requests ·{" "}
             {failed
               ? `${failed} failed ${failed === 1 ? "item" : "items"}`
-              : "No failed items"}
+              : failedAssets
+                ? `${failedAssets} failed assets`
+                : "No failed items"}
           </span>
           <span>
             {elapsed < 2

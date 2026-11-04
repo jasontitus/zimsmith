@@ -80,6 +80,11 @@ pub(crate) fn entry(
         text,
         assets: vec![],
         media_file: None,
+        subtitles: vec![],
+        transcript: vec![],
+        transcript_file: None,
+        subtitle_policy: None,
+        subtitle_error: None,
         media_audio: None,
         thumbnail_url: Some(format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg")),
         thumbnail_file: None,
@@ -129,6 +134,11 @@ pub async fn scan(record: &Record) -> Result<()> {
                     text: String::new(),
                     assets: vec![],
                     media_file: None,
+                    subtitles: vec![],
+                    transcript: vec![],
+                    transcript_file: None,
+                    subtitle_policy: None,
+                    subtitle_error: None,
                     media_audio: None,
                     thumbnail_url: None,
                     thumbnail_file: None,
@@ -251,7 +261,7 @@ pub async fn scan(record: &Record) -> Result<()> {
     Ok(())
 }
 
-async fn original_audio_player(
+pub(crate) async fn original_audio_player(
     record: &Record,
     rp: &RustyPipe,
     source: &url::Url,
@@ -332,13 +342,34 @@ pub async fn download(record: &Record) -> Result<()> {
                 let player =
                     original_audio_player(record, rp, &source, &video, job.config.delay_ms).await?;
                 user_agent = Some(rp.query().user_agent(player.client_type).into_owned());
-                let selected = crate::youtube_audio::select(&player)?;
+                let selected = crate::youtube_audio::select_with_height(
+                    &player,
+                    job.config.capture.video_quality.height(),
+                )?;
                 record
                     .log(
                         "info",
                         format!("{} · {}", item.title, selected.audio_note()),
                     )
                     .await?;
+                if job.config.capture.subtitles {
+                    crate::captions::save_sources(
+                        record,
+                        item,
+                        crate::captions::Sources {
+                            tracks: player.subtitles.clone(),
+                            original_language: selected
+                                .audio
+                                .and_then(|a| a.track.as_ref())
+                                .and_then(|t| t.lang.clone()),
+                            resolved_at: crate::now(),
+                            user_agent: Some(
+                                rp.query().user_agent(player.client_type).into_owned(),
+                            ),
+                        },
+                    )
+                    .await?;
+                }
                 let stream = selected.video;
                 let audio = selected.audio.map(|a| {
                     (
@@ -452,7 +483,9 @@ pub async fn download(record: &Record) -> Result<()> {
                         j.log("error", format!("{}: {message}", item.title));
                     })
                     .await?;
-                if error.is::<crate::youtube_audio::OriginalAudioUnavailable>() {
+                if error.is::<crate::capture::BudgetReached>()
+                    || error.is::<crate::youtube_audio::OriginalAudioUnavailable>()
+                {
                     return Err(error);
                 }
                 if error
@@ -476,6 +509,9 @@ pub async fn download(record: &Record) -> Result<()> {
         failed == 0,
         "{failed} media items failed. Retry or remove them from the selection."
     );
+    if let Some(rp) = &rp {
+        crate::captions::prepare(record, rp).await?;
+    }
     Ok(())
 }
 
@@ -549,6 +585,9 @@ async fn stream_file_with_policy(
             }
         }
     }
+    if record.remaining_download().await == Some(0) {
+        return Err(crate::capture::BudgetReached.into());
+    }
     for attempt in 0..=4 {
         wait_saved_cooldown(record).await?;
         let validator: Option<Validator> = tokio::fs::read(&meta)
@@ -579,197 +618,205 @@ async fn stream_file_with_policy(
                 .and_then(|v| v.total)
         });
         record.transfer_progress(offset, resource_total).await;
-        let result: Result<u64> = async {
-            loop {
-                pace(source, Duration::from_millis(config.delay_ms)).await;
-                let mut request_url = source.clone();
-                let mut requested_end = None;
-                let query_range = youtube_cdn && resource_total.is_some();
-                if query_range {
-                    let end = resource_total
-                        .unwrap()
-                        .saturating_sub(1)
-                        .min(offset.saturating_add(4 * 1024 * 1024 - 1));
-                    let pairs: Vec<_> = source
-                        .query_pairs()
-                        .filter(|(key, _)| key != "range")
-                        .map(|(k, v)| (k.into_owned(), v.into_owned()))
-                        .collect();
-                    request_url
-                        .query_pairs_mut()
-                        .clear()
-                        .extend_pairs(pairs)
-                        .append_pair("range", &format!("{offset}-{end}"));
-                    requested_end = Some(end);
-                }
-                let mut request = client.get(request_url);
-                if let Some(agent) = user_agent {
-                    request = request.header("User-Agent", agent);
-                }
-                if youtube_cdn {
-                    // The CDN rejects ranges past the signed resource size.
-                    let end = resource_total
-                        .map(|total| total.saturating_sub(1))
-                        .unwrap_or(offset.saturating_add(1023))
-                        .min(offset.saturating_add(4 * 1024 * 1024 - 1));
-                    if !query_range {
-                        request = request.header("Range", format!("bytes={offset}-{end}"));
+        let result: Result<u64> =
+            async {
+                loop {
+                    pace(source, Duration::from_millis(config.delay_ms)).await;
+                    let mut request_url = source.clone();
+                    let mut requested_end = None;
+                    let query_range = youtube_cdn && resource_total.is_some();
+                    if query_range {
+                        let end = resource_total
+                            .unwrap()
+                            .saturating_sub(1)
+                            .min(offset.saturating_add(4 * 1024 * 1024 - 1));
+                        let pairs: Vec<_> = source
+                            .query_pairs()
+                            .filter(|(key, _)| key != "range")
+                            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                            .collect();
+                        request_url
+                            .query_pairs_mut()
+                            .clear()
+                            .extend_pairs(pairs)
+                            .append_pair("range", &format!("{offset}-{end}"));
+                        requested_end = Some(end);
                     }
-                    request = request
-                        .header("Origin", "https://www.youtube.com")
-                        .header("Referer", "https://www.youtube.com/");
-                }
-                if offset > 0 {
-                    if !youtube_cdn {
-                        request = request.header("Range", format!("bytes={offset}-"));
+                    let mut request = client.get(request_url);
+                    if let Some(agent) = user_agent {
+                        request = request.header("User-Agent", agent);
                     }
-                    if let Some(v) = validator
-                        .as_ref()
-                        .filter(|v| !v.etag.is_empty() && !v.etag.starts_with("W/"))
-                    {
-                        request = request.header("If-Range", &v.etag);
+                    if youtube_cdn {
+                        // The CDN rejects ranges past the signed resource size.
+                        let end = resource_total
+                            .map(|total| total.saturating_sub(1))
+                            .unwrap_or(offset.saturating_add(1023))
+                            .min(offset.saturating_add(4 * 1024 * 1024 - 1));
+                        if !query_range {
+                            request = request.header("Range", format!("bytes={offset}-{end}"));
+                        }
+                        request = request
+                            .header("Origin", "https://www.youtube.com")
+                            .header("Referer", "https://www.youtube.com/");
                     }
-                }
-                record.change(|j| j.requests += 1).await?;
-                let response = request.send().await;
-                let mut response = response?;
-                let status = response.status();
-                if status.as_u16() == 429 || status.is_server_error() {
-                    let delay = retry_delay(
-                        response
+                    if offset > 0 {
+                        if !youtube_cdn {
+                            request = request.header("Range", format!("bytes={offset}-"));
+                        }
+                        if let Some(v) = validator
+                            .as_ref()
+                            .filter(|v| !v.etag.is_empty() && !v.etag.starts_with("W/"))
+                        {
+                            request = request.header("If-Range", &v.etag);
+                        }
+                    }
+                    record.change(|j| j.requests += 1).await?;
+                    let response = request.send().await;
+                    let mut response = response?;
+                    let status = response.status();
+                    if status.as_u16() == 429 || status.is_server_error() {
+                        let delay = retry_delay(
+                            response
+                                .headers()
+                                .get("retry-after")
+                                .and_then(|h| h.to_str().ok()),
+                            attempt,
+                        );
+                        cooldown(source, delay).await;
+                        record
+                            .change(|j| {
+                                j.retry_at = Some(now() + delay.as_secs() + 1);
+                                j.log(
+                                    "warning",
+                                    format!(
+                                        "Media server returned {status}; waiting {} seconds.",
+                                        delay.as_secs()
+                                    ),
+                                );
+                            })
+                            .await?;
+                        tokio::time::sleep(delay).await;
+                        record.change(|j| j.retry_at = None).await?;
+                        bail!("Media server returned {status}");
+                    }
+                    if status.is_client_error() {
+                        return Err(MediaHttpError(
+                            status.as_u16(),
+                            source.host_str().unwrap_or("unknown host").into(),
+                        )
+                        .into());
+                    }
+                    anyhow::ensure!(status.is_success(), "Media server returned {status}");
+                    let append = (status.as_u16() == 206 || query_range) && offset > 0;
+                    let mut full_size = None;
+                    if status.as_u16() == 206 {
+                        let range = response
                             .headers()
-                            .get("retry-after")
-                            .and_then(|h| h.to_str().ok()),
-                        attempt,
-                    );
-                    cooldown(source, delay).await;
-                    record
-                        .change(|j| {
-                            j.retry_at = Some(now() + delay.as_secs() + 1);
-                            j.log(
-                                "warning",
-                                format!(
-                                    "Media server returned {status}; waiting {} seconds.",
-                                    delay.as_secs()
-                                ),
-                            );
-                        })
-                        .await?;
-                    tokio::time::sleep(delay).await;
-                    record.change(|j| j.retry_at = None).await?;
-                    bail!("Media server returned {status}");
-                }
-                if status.is_client_error() {
-                    return Err(MediaHttpError(
-                        status.as_u16(),
-                        source.host_str().unwrap_or("unknown host").into(),
-                    )
-                    .into());
-                }
-                anyhow::ensure!(status.is_success(), "Media server returned {status}");
-                let append = (status.as_u16() == 206 || query_range) && offset > 0;
-                let mut full_size = None;
-                if status.as_u16() == 206 {
-                    let range = response
-                        .headers()
-                        .get("content-range")
-                        .and_then(|h| h.to_str().ok())
-                        .context("Partial response lacks Content-Range")?;
-                    let start = range
-                        .strip_prefix("bytes ")
-                        .and_then(|s| s.split('-').next())
-                        .and_then(|s| s.parse::<u64>().ok())
-                        .context("Invalid Content-Range")?;
-                    anyhow::ensure!(start == offset, "Media server returned the wrong range");
-                    full_size = range
-                        .split('/')
-                        .next_back()
-                        .and_then(|v| v.parse::<u64>().ok());
-                    anyhow::ensure!(
-                        full_size.is_some(),
-                        "Partial response lacks the complete file size"
-                    );
-                }
-                let mut size = if append { offset } else { 0 };
-                let expected = response.content_length().map(|n| n + size);
-                let total = full_size
-                    .or(if query_range { resource_total } else { None })
-                    .or(expected);
-                resource_total = total;
-                anyhow::ensure!(
-                    total.unwrap_or(0) <= cap,
-                    "Media exceeds {} MB limit",
-                    config.max_resource_mb
-                );
-                let etag = response
-                    .headers()
-                    .get("etag")
-                    .and_then(|h| h.to_str().ok())
-                    .filter(|s| !s.starts_with("W/"));
-                if etag.is_some() || youtube_cdn {
-                    tokio::fs::write(
-                        &meta,
-                        serde_json::to_vec(&Validator {
-                            url: source.to_string(),
-                            etag: etag.unwrap_or_default().to_string(),
-                            total,
-                        })?,
-                    )
-                    .await?;
-                } else {
-                    let _ = tokio::fs::remove_file(&meta).await;
-                }
-                let mut file = tokio::fs::OpenOptions::new()
-                    .create(true)
-                    .write(true)
-                    .truncate(!append)
-                    .append(append)
-                    .open(&partial)
-                    .await?;
-                record.transfer_progress(size, total).await;
-                let mut last_update = std::time::Instant::now();
-                while let Some(chunk) = response.chunk().await? {
-                    size += chunk.len() as u64;
-                    anyhow::ensure!(size <= cap, "Media exceeded file-size limit");
-                    file.write_all(&chunk).await?;
-                    if last_update.elapsed() >= Duration::from_millis(500) {
-                        record.transfer_progress(size, total).await;
-                        last_update = std::time::Instant::now();
+                            .get("content-range")
+                            .and_then(|h| h.to_str().ok())
+                            .context("Partial response lacks Content-Range")?;
+                        let start = range
+                            .strip_prefix("bytes ")
+                            .and_then(|s| s.split('-').next())
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .context("Invalid Content-Range")?;
+                        anyhow::ensure!(start == offset, "Media server returned the wrong range");
+                        full_size = range
+                            .split('/')
+                            .next_back()
+                            .and_then(|v| v.parse::<u64>().ok());
+                        anyhow::ensure!(
+                            full_size.is_some(),
+                            "Partial response lacks the complete file size"
+                        );
                     }
-                }
-                file.sync_all().await?;
-                record.transfer_progress(size, total).await;
-                anyhow::ensure!(
-                    size > 0 && expected.map(|n| n == size).unwrap_or(true),
-                    "Media download was incomplete"
-                );
-                if let Some(end) = requested_end {
+                    let mut size = if append { offset } else { 0 };
+                    let expected = response.content_length().map(|n| n + size);
+                    let total = full_size
+                        .or(if query_range { resource_total } else { None })
+                        .or(expected);
+                    resource_total = total;
                     anyhow::ensure!(
-                        size == end + 1,
-                        "Media server did not return the requested byte range"
+                        total.unwrap_or(0) <= cap,
+                        "Media exceeds {} MB limit",
+                        config.max_resource_mb
                     );
+                    if record.remaining_download().await.is_some_and(|remaining| {
+                        total.unwrap_or(0).saturating_sub(size) > remaining
+                    }) {
+                        return Err(crate::capture::BudgetReached.into());
+                    }
+                    let etag = response
+                        .headers()
+                        .get("etag")
+                        .and_then(|h| h.to_str().ok())
+                        .filter(|s| !s.starts_with("W/"));
+                    if etag.is_some() || youtube_cdn {
+                        tokio::fs::write(
+                            &meta,
+                            serde_json::to_vec(&Validator {
+                                url: source.to_string(),
+                                etag: etag.unwrap_or_default().to_string(),
+                                total,
+                            })?,
+                        )
+                        .await?;
+                    } else {
+                        let _ = tokio::fs::remove_file(&meta).await;
+                    }
+                    let mut file = tokio::fs::OpenOptions::new()
+                        .create(true)
+                        .write(true)
+                        .truncate(!append)
+                        .append(append)
+                        .open(&partial)
+                        .await?;
+                    record.transfer_progress(size, total).await;
+                    let mut last_update = std::time::Instant::now();
+                    while let Some(chunk) = response.chunk().await? {
+                        size += chunk.len() as u64;
+                        anyhow::ensure!(size <= cap, "Media exceeded file-size limit");
+                        record.consume_download(chunk.len() as u64).await?;
+                        file.write_all(&chunk).await?;
+                        if last_update.elapsed() >= Duration::from_millis(500) {
+                            record.transfer_progress(size, total).await;
+                            last_update = std::time::Instant::now();
+                        }
+                    }
+                    file.sync_all().await?;
+                    record.transfer_progress(size, total).await;
+                    anyhow::ensure!(
+                        size > 0 && expected.map(|n| n == size).unwrap_or(true),
+                        "Media download was incomplete"
+                    );
+                    if let Some(end) = requested_end {
+                        anyhow::ensure!(
+                            size == end + 1,
+                            "Media server did not return the requested byte range"
+                        );
+                    }
+                    if total.is_some_and(|total| size < total) {
+                        anyhow::ensure!(size > offset, "Media server returned an empty range");
+                        offset = size;
+                        continue;
+                    }
+                    anyhow::ensure!(
+                        total.map(|total| total == size).unwrap_or(true),
+                        "Media file size does not match the complete resource"
+                    );
+                    if path.exists() {
+                        tokio::fs::remove_file(path).await?;
+                    }
+                    tokio::fs::rename(&partial, path).await?;
+                    tokio::fs::write(&receipt, serde_json::to_vec(&(identity, size))?).await?;
+                    let _ = tokio::fs::remove_file(&meta).await;
+                    return Ok(size);
                 }
-                if total.is_some_and(|total| size < total) {
-                    anyhow::ensure!(size > offset, "Media server returned an empty range");
-                    offset = size;
-                    continue;
-                }
-                anyhow::ensure!(
-                    total.map(|total| total == size).unwrap_or(true),
-                    "Media file size does not match the complete resource"
-                );
-                if path.exists() {
-                    tokio::fs::remove_file(path).await?;
-                }
-                tokio::fs::rename(&partial, path).await?;
-                tokio::fs::write(&receipt, serde_json::to_vec(&(identity, size))?).await?;
-                let _ = tokio::fs::remove_file(&meta).await;
-                return Ok(size);
             }
-        }
-        .await;
+            .await;
         match result {
             Ok(size) => return Ok(size),
+            Err(error) if error.is::<crate::capture::BudgetReached>() => return Err(error),
             Err(error) if error.downcast_ref::<MediaHttpError>().is_some() => return Err(error),
             Err(error) if attempt == 4 => return Err(error),
             Err(error) => {
@@ -850,6 +897,7 @@ mod tests {
                 description: "Fixture".into(),
                 creator: "Fixture".into(),
                 include_assets: false,
+                capture: Default::default(),
             })
             .await
             .unwrap();
@@ -985,6 +1033,7 @@ mod tests {
                 description: "Range test".into(),
                 creator: "Test".into(),
                 include_assets: false,
+                capture: Default::default(),
             })
             .await
             .unwrap();
@@ -1051,6 +1100,7 @@ mod tests {
                 description: "Native transfer validation".into(),
                 creator: "Zim Studio test".into(),
                 include_assets: false,
+                capture: Default::default(),
             })
             .await
             .unwrap();

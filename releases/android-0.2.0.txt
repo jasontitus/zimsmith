@@ -1,0 +1,9 @@
+Refresh existing collections with change review, saved YouTube track reuse, and conditional asset revalidation.
+
+Control URL scope, source asset types, total download budgets, and video quality (360p/720p/1080p). Original audio remains the default.
+
+Save available YouTube subtitles, search transcripts, and open playback timestamps. Full transcripts stay in per-video files; portable collection search has a disclosed memory budget.
+
+Import saved HTML, media, folders, ZIPs, and website URL lists. Local imports do not fetch missing resources; chunked uploads can resume after reselecting files.
+
+Every new ZIM includes a capture report. Checksum and directory validation run before a replacement archive is marked ready. Failed attempts can be deleted, including cached files.

@@ -1,7 +1,9 @@
+import { linkedAsset } from "../capture";
 import { DOMParser } from "linkedom/worker";
 import templateData from "./templates.json";
 import css from "../../crates/engine/assets/archive.css?raw";
 import search from "../../crates/engine/assets/search.js?raw";
+import mediaScript from "../../crates/engine/assets/media.js?raw";
 import gallery from "../../crates/engine/assets/gallery.js?raw";
 import sans from "../../crates/engine/assets/fonts/dm-sans.woff2?url";
 import display from "../../crates/engine/assets/fonts/manrope.woff2?url";
@@ -79,7 +81,9 @@ export async function rewritePage(
     const url = resolveUrl(original, entry.url);
     if (url) {
       const hash = new URL(original, entry.url).hash;
-      a.setAttribute("href", (selected.get(url) || url) + hash);
+      const saved =
+        job.config.include_assets && linkedAsset(url) ? await asset(url) : "";
+      a.setAttribute("href", (selected.get(url) || saved || url) + hash);
       a.setAttribute("rel", "noopener noreferrer");
     } else a.removeAttribute("href");
   }
@@ -128,7 +132,9 @@ export async function rewritePage(
   const nav = document.createElement("nav");
   nav.className = "zim-archive-nav";
   nav.setAttribute("data-zim-template", job.archive_template);
-  nav.innerHTML = `<a href="index.html">← Collection contents</a><span>Saved for offline reading</span><a href="${escape(entry.url)}" rel="noopener noreferrer">Original source ↗</a>`;
+  nav.innerHTML = job.import
+    ? `<a href="index.html">← Collection contents</a><span>Imported saved content</span>`
+    : `<a href="index.html">← Collection contents</a><span>Saved for offline reading</span><a href="${escape(entry.url)}" rel="noopener noreferrer">Original source ↗</a>`;
   document.body.prepend(nav);
   return "<!doctype html>" + document.documentElement.outerHTML;
 }
@@ -206,7 +212,21 @@ export function renderIndex(job: BrowserJob) {
     job.config.description;
   document.querySelector(".collection-meta")!.innerHTML =
     `<span>${documents.length} items</span><span aria-hidden="true">/</span><span>Curated by ${escape(job.config.creator)}</span>`;
-  document.querySelector(".source-link")!.setAttribute("href", job.config.url);
+  document
+    .querySelector(".source-link")!
+    .setAttribute("href", job.import ? "#collection" : job.config.url);
+  if (job.import)
+    document.querySelector(".source-link")!.textContent =
+      "Imported saved files";
+  const report = document.createElement("span");
+  report.innerHTML = "<a href='capture-report.html'>Capture report</a>";
+  document.querySelector(".collection-meta")!.append(report);
+  if (job.capture_report?.omitted_assets) {
+    const notice = document.createElement("aside");
+    notice.className = "archive-noscript";
+    notice.textContent = `${job.capture_report.omitted_assets} assets were omitted. See the capture report for details.`;
+    document.querySelector(".archive-collection")!.before(notice);
+  }
   document.getElementById("count")!.textContent =
     `${documents.length} items to explore`;
   const list = document.getElementById("contents")!;
@@ -234,13 +254,18 @@ export function renderIndex(job: BrowserJob) {
 }
 export function renderMedia(job: BrowserJob, entry: BrowserEntry) {
   const tag = /^audio\//.test(entry.mime || "") ? "audio" : "video";
-  return `<!doctype html><html lang="${escape(job.config.language)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; font-src 'self'; media-src 'self'; base-uri 'none'; form-action 'none'"><title>${escape(entry.title)}</title><link rel="stylesheet" href="studio.css"></head><body class="zim-archive" data-zim-template="${job.archive_template}"><nav class="zim-archive-nav"><a href="index.html">← Collection contents</a></nav><main class="archive-media"><h1>${escape(entry.title)}</h1><p>${escape(job.config.title)}</p><div class="media-player"><${tag} controls playsinline preload="metadata" src="${escape(entry.media!)}"></${tag}></div><section class="media-description"><h2>About this item</h2><p>${escape(entry.text)}</p></section><a class="source-link" href="${escape(entry.url)}" rel="noopener noreferrer">Original source ↗</a></main></body></html>`;
+  return `<!doctype html><html lang="${escape(job.config.language)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; font-src 'self'; media-src 'self'; base-uri 'none'; form-action 'none'"><title>${escape(entry.title)}</title><link rel="stylesheet" href="studio.css"></head><body class="zim-archive" data-zim-template="${job.archive_template}"><nav class="zim-archive-nav"><a href="index.html">← Collection contents</a></nav><main class="archive-media"><h1>${escape(entry.title)}</h1><p>${escape(job.config.title)}</p><div class="media-player"><${tag} id="video-track" controls playsinline preload="metadata" src="${escape(entry.media!)}"></${tag}></div><section class="media-description"><h2>About this item</h2><p>${escape(entry.text)}</p></section><a class="source-link" href="${escape(job.import ? "index.html" : entry.url)}" rel="noopener noreferrer">${job.import ? "Imported saved files" : "Original source ↗"}</a></main><script src="media.js"></script></body></html>`;
 }
 let assets: Promise<ZimItem[]> | undefined;
 export function bundledAssets() {
   return (assets ||= Promise.all(
     [
       { path: "studio.css", mime: "text/css", content: new Blob([css]) },
+      {
+        path: "media.js",
+        mime: "text/javascript",
+        content: new Blob([mediaScript]),
+      },
       {
         path: "search.js",
         mime: "application/javascript",

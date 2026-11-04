@@ -28,6 +28,12 @@ jobs:
       - run: cargo test -p zim-engine -p zim-worker --locked
       - run: cargo check -p zim-studio --locked
       - run: cargo test -p zim-studio sharing --lib --locked
+      - if: runner.os == 'Linux'
+        name: Install browser test runtime
+        run: npx playwright install --with-deps chromium
+      - if: runner.os == 'Linux'
+        name: Verify browser, extension, imports, and captions
+        run: npm run test:browser
   ios-engine:
     runs-on: macos-latest
     steps:

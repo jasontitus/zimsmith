@@ -6,15 +6,17 @@ Turn websites and media collections into searchable offline [ZIM archives](https
 
 ## What it does
 
-- Crawls websites, YouTube playlists/channels/searches/videos, and direct media links.
-- Scans first, then lets you review what to download. Collections up to 100 items can start automatically; the threshold is configurable.
-- Pauses, resumes, checkpoints progress, and respects rate limits and server cooldowns.
-- Builds a table of contents, offline search, and a ZIM with a choice of four templates, including a video gallery.
-- Exports to Downloads or the phone’s file picker, and opens archives in a compatible viewer.
+- Crawl websites, YouTube collections, and direct media locally.
+- Preview first, pause/resume, and respect robots rules and rate limits.
+- Refresh collections; control URL scope, asset types, download budgets, and video quality.
+- Save YouTube captions, search transcripts, and jump to playback timestamps.
+- Import saved pages, media, folders, ZIPs, or website URL lists.
+- Build searchable ZIMs in four styles, with capture and validation reports.
+- Save/open archives and delete failed attempts.
 
 ## Use it
 
-Enter a URL or hostname, scan, review when prompted, then **Download & build ZIM**. Keep the mobile app open while jobs run.
+Enter a URL or hostname, scan, review when prompted, then **Download & build ZIM**. Small scans can start automatically (100 items by default; configurable). Keep the mobile app open while jobs run.
 
 You can also [share a link from your browser](docs/SHARING.md) to Zimsmith on Android and iOS.
 

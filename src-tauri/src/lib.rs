@@ -63,7 +63,9 @@ async fn update_settings(
 
 #[tauri::command]
 async fn capabilities(engine: State<'_, Engine>) -> Result<zim_engine::Capabilities, String> {
-    Ok(engine.capabilities().await)
+    let mut capabilities = engine.capabilities().await;
+    capabilities.version = env!("CARGO_PKG_VERSION").into();
+    Ok(capabilities)
 }
 #[tauri::command]
 async fn list_jobs(engine: State<'_, Engine>) -> Result<Vec<Job>, String> {
@@ -130,6 +132,64 @@ async fn rebuild_job(
 ) -> Result<Job, String> {
     engine
         .rebuild(&id, template)
+        .await
+        .map(Job::view)
+        .map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+async fn begin_import(
+    engine: State<'_, Engine>,
+    config: NewJob,
+    files: Vec<zim_engine::imports::ImportFile>,
+    existing_id: Option<String>,
+) -> Result<Job, String> {
+    engine
+        .begin_import(config, files, existing_id)
+        .await
+        .map(Job::view)
+        .map_err(|e| format!("{e:#}"))
+}
+#[tauri::command]
+async fn import_offset(engine: State<'_, Engine>, id: String, path: String) -> Result<u64, String> {
+    engine
+        .import_offset(&id, &path)
+        .await
+        .map_err(|e| format!("{e:#}"))
+}
+#[tauri::command]
+async fn import_chunk(
+    engine: State<'_, Engine>,
+    id: String,
+    path: String,
+    offset: u64,
+    data: String,
+) -> Result<u64, String> {
+    engine
+        .import_chunk_base64(&id, &path, offset, &data)
+        .await
+        .map_err(|e| format!("{e:#}"))
+}
+#[tauri::command]
+async fn finish_import(engine: State<'_, Engine>, id: String) -> Result<Job, String> {
+    engine
+        .finish_import(&id)
+        .await
+        .map(Job::view)
+        .map_err(|e| format!("{e:#}"))
+}
+#[tauri::command]
+async fn cancel_import(engine: State<'_, Engine>, id: String) -> Result<(), String> {
+    engine
+        .cancel_import(&id)
+        .await
+        .map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+async fn refresh_job(engine: State<'_, Engine>, id: String) -> Result<Job, String> {
+    engine
+        .refresh_collection(&id)
         .await
         .map(Job::view)
         .map_err(|e| format!("{e:#}"))
@@ -449,6 +509,12 @@ pub fn run() {
             repair_youtube_audio,
             build_available_job,
             delete_failed_job,
+            refresh_job,
+            begin_import,
+            import_offset,
+            import_chunk,
+            finish_import,
+            cancel_import,
             export_archive,
             open_archive
         ])

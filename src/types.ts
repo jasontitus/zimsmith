@@ -11,7 +11,23 @@ export interface Settings {
   auto_start_item_limit: number;
   archive_template: ArchiveTemplate;
 }
+export interface CaptureOptions {
+  include_urls: string[];
+  seed_urls: string[];
+  exclude_urls: string[];
+  images: boolean;
+  styles: boolean;
+  fonts: boolean;
+  media: boolean;
+  documents: boolean;
+  max_download_mb: number | null;
+  video_quality: "small" | "balanced" | "high";
+  subtitles: boolean;
+  subtitle_language: string;
+  auto_captions: boolean;
+}
 export interface Config {
+  capture?: CaptureOptions;
   url: string;
   title: string;
   kind: SourceKind;
@@ -35,7 +51,26 @@ export interface Entry {
   duration: number | null;
   error: string | null;
 }
+export interface CaptureSummary {
+  captured_items: number;
+  saved_assets: number;
+  omitted_assets: number;
+  excluded_assets: number;
+  failed_assets: number;
+  online_links: number;
+  subtitle_tracks: number;
+  caption_gaps: number;
+  search_limited: boolean;
+  warnings: string[];
+}
 export interface Job {
+  capture_report?: CaptureSummary | null;
+  validation?: {
+    checksum_verified: boolean;
+    structure_verified: boolean;
+    checked_at: number;
+    archive_entries: number;
+  } | null;
   id: string;
   config: Config;
   status: string;
@@ -54,7 +89,23 @@ export interface Job {
   retry_at: number | null;
   requests: number;
   bytes: number;
-  asset_summary?: { downloaded: number; missing: number; omitted: number };
+  downloaded_bytes?: number;
+  asset_summary?: {
+    downloaded: number;
+    missing: number;
+    omitted: number;
+    failed?: number;
+  };
+  import?: {
+    files?: { path: string; size: number }[];
+    finished: boolean;
+    file_count: number;
+  } | null;
+  refresh?: {
+    compared: boolean;
+    complete: boolean;
+    changes: { url: string; title: string; kind: string }[];
+  } | null;
   progress?: {
     label: string;
     completed: number;
