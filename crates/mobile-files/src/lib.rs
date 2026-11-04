@@ -11,6 +11,23 @@ pub struct MobileFiles<R: Runtime>(tauri::plugin::PluginHandle<R>);
 
 #[cfg(any(target_os = "android", target_os = "ios"))]
 impl<R: Runtime> MobileFiles<R> {
+    pub fn render_page(
+        &self,
+        request: serde_json::Value,
+        script: &str,
+    ) -> Result<serde_json::Value, String> {
+        self.0
+            .run_mobile_plugin(
+                "renderPage",
+                serde_json::json!({"request":request,"script":script}),
+            )
+            .map_err(|e| e.to_string())
+    }
+    pub fn cancel_render(&self, id: &str) -> Result<serde_json::Value, String> {
+        self.0
+            .run_mobile_plugin("cancelRender", serde_json::json!({"id":id}))
+            .map_err(|e| e.to_string())
+    }
     pub fn shared_links(&self) -> Result<serde_json::Value, String> {
         self.0
             .run_mobile_plugin("sharedLinks", serde_json::json!({}))

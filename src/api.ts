@@ -10,6 +10,13 @@ import type {
 } from "./types";
 
 export const native = isTauri();
+export async function refreshJavascript(id: string): Promise<Job> {
+  if (!native)
+    throw new Error(
+      "JavaScript rendering requires the installed Zimsmith app.",
+    );
+  return invoke<Job>("refresh_javascript", { id });
+}
 // This HTTP bridge is only for developing the UI in a browser. Installed apps
 // always use their own Rust engine through Tauri IPC, including phones.
 const base = import.meta.env.VITE_API_URL || "http://127.0.0.1:8788";

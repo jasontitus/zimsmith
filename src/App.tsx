@@ -44,6 +44,7 @@ import {
   api,
   native,
   repairYouTubeAudio,
+  refreshJavascript,
   buildAvailable,
   deleteFailed,
 } from "./api";
@@ -1471,6 +1472,36 @@ export default function App() {
                     >
                       <RefreshCw size={17} /> Check for changes
                     </button>
+                    {native &&
+                      job.config.kind === "website" &&
+                      !job.config.capture?.render_javascript && (
+                        <button
+                          className="button secondary"
+                          disabled={
+                            busy || !!job.config.capture?.max_download_mb
+                          }
+                          onClick={() =>
+                            void action(async () => {
+                              await refreshJavascript(job.id);
+                              setToast(
+                                "Rescanning with JavaScript. Review the rendered pages before building; your existing ZIM is preserved.",
+                              );
+                            })
+                          }
+                        >
+                          <Globe2 size={17} /> Rescan with JavaScript
+                        </button>
+                      )}
+                    {native &&
+                      job.config.kind === "website" &&
+                      !job.config.capture?.render_javascript &&
+                      !!job.config.capture?.max_download_mb && (
+                        <p className="settings-note">
+                          To render JavaScript, start a new crawl with the
+                          download budget cleared. Browser resource traffic
+                          cannot be limited exactly.
+                        </p>
+                      )}
                   </section>
                 )}
               {job.refresh?.compared && (
@@ -1546,16 +1577,18 @@ export default function App() {
                     </h2>
                     <p>
                       {job.status === "scanning"
-                        ? job.auto_start_item_limit !== null
-                          ? `Discovering items. Complete, error-free scans of up to ${job.auto_start_item_limit} items will start automatically.`
-                          : "Discovering items. Media and page assets wait for your confirmation."
+                        ? job.config.capture?.render_javascript
+                          ? "Rendering pages on this device. Scripts and page resources load during the scan; review is always required. You can pause at any time."
+                          : job.auto_start_item_limit !== null
+                            ? `Discovering items. Complete, error-free scans of up to ${job.auto_start_item_limit} items will start automatically.`
+                            : "Discovering items. Media and page assets wait for your confirmation."
                         : job.status === "review"
                           ? "Choose what to keep. Asset sizes and some media sizes are not known yet."
                           : "Completed items are checkpointed and reused when you resume."}
                     </p>
                   </div>
                   <div className="job-actions">
-                    {["failed", "paused"].includes(job.status) &&
+                    {["failed", "paused", "review"].includes(job.status) &&
                       !job.import && (
                         <button
                           className="button secondary"
@@ -2308,6 +2341,18 @@ function EntryRow({
                 page(s)
               </small>
             )}
+            {entry.rendered && (
+              <small>
+                {entry.rendered.settled
+                  ? "Browser snapshot"
+                  : "Browser snapshot may be incomplete"}
+              </small>
+            )}
+            {entry.rendered?.warnings.slice(0, 2).map((warning, index) => (
+              <small className="entry-error" key={index}>
+                {warning}
+              </small>
+            ))}
             {entry.error && (
               <small className="entry-error">{entry.error}</small>
             )}

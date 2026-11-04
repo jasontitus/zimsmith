@@ -13,6 +13,8 @@ export interface Settings {
   zstd_level: number;
 }
 export interface CaptureOptions {
+  render_javascript: boolean;
+  render_timeout_secs: number;
   embedded_videos: boolean;
   discover_sitemaps: boolean;
   include_urls: string[];
@@ -44,6 +46,12 @@ export interface Config {
   include_assets: boolean;
 }
 export interface Entry {
+  rendered?: {
+    settled: boolean;
+    resource_count: number;
+    known_transfer_bytes: number;
+    warnings: string[];
+  } | null;
   embedded_in?: string[];
   id: string;
   url: string;
@@ -56,6 +64,7 @@ export interface Entry {
   error: string | null;
 }
 export interface CaptureSummary {
+  javascript_pages?: number;
   captured_items: number;
   saved_assets: number;
   omitted_assets: number;

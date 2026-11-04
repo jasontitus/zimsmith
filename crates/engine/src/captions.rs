@@ -458,6 +458,7 @@ mod live_test {
         entry.state = "done".into();
         job.entries = vec![entry];
         let record = Record {
+            renderer: Default::default(),
             job: tokio::sync::Mutex::new(job),
             stop: Default::default(),
             running: Default::default(),

@@ -4,15 +4,15 @@
   "channel": "direct",
   "releases": [
     {
-      "version": "0.2.3",
-      "version_code": 2003,
+      "version": "0.2.4",
+      "version_code": 2004,
       "abi": "arm64-v8a",
       "min_sdk": 24,
-      "url": "https://github.com/jasontitus/zimsmith/releases/download/v0.2.3/Zimsmith-0.2.3-arm64-v8a-88d65630a191.apk",
-      "sha256": "88d65630a191d2a347649a9356c3d0df51c6622499a4f2d9207727597b48a325",
+      "url": "https://github.com/jasontitus/zimsmith/releases/download/v0.2.4/Zimsmith-0.2.4-arm64-v8a-0a4efe85536f.apk",
+      "sha256": "0a4efe85536f5586d89629963acb3257caca1780e675e0889fe7baafcd2f2129",
       "certificate_sha256": "f05a21df94164c0695b4e422bb413e2b7e5971ef44ecab3e2666faacb287aa89",
-      "size_bytes": 40245901,
-      "notes": "Download embedded YouTube videos with website crawls: deduplicated review items, original audio, captions, resumable downloads, and inline offline players. Embedded-video scans always require review.\n\nAdd optional bounded sitemap discovery, improve lazy/responsive image capture and HTML base URL handling, and reject known HTTP-200 verification challenges. Build with available files keeps saved pages when embedded videos are unfinished.\n\nWebsite YouTube extraction and sitemap discovery run locally in installed apps. JavaScript-only catalogs still require the live site."
+      "size_bytes": 40503949,
+      "notes": "Add optional on-device JavaScript rendering for website crawls. Capture hydrated and API-loaded content, lazy images, recognized Load more controls, accessible list pagination, and Hostinger product catalogs. The same renderer works across sites and frameworks.\n\nReview rendered pages before downloading, see incomplete-capture warnings and progress, pause/resume, and rescan an existing collection with JavaScript while preserving its current ZIM. Observed 429/503 responses use Retry-After backoff.\n\nRendering requires an installed app and loads page resources during scanning. Strict download budgets must be cleared. Android requires a current System WebView. Logins, live forms, and arbitrary interactive workflows are not captured."
     }
   ]
 }

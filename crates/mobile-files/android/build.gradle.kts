@@ -10,7 +10,7 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        minSdk = 21
+        minSdk = 24
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
@@ -22,6 +22,12 @@ android {
     }
 }
 
+// The Tauri host currently opts into AGP's legacy DSL.
+val captureSourceSets = (extensions.getByName("android") as com.android.build.gradle.LibraryExtension)
+    .sourceSets as org.gradle.api.NamedDomainObjectContainer<*>
+(captureSourceSets.getByName("androidTest") as com.android.build.gradle.api.AndroidSourceSet)
+    .assets.srcDir("../../engine/assets")
+
 kotlin {
     compilerOptions {
         jvmTarget = JvmTarget.JVM_1_8
@@ -29,6 +35,7 @@ kotlin {
 }
 
 dependencies {
+    implementation("androidx.webkit:webkit:1.14.0")
 
     implementation("androidx.core:core-ktx:1.9.0")
     implementation("androidx.appcompat:appcompat:1.6.0")

@@ -6810,8 +6810,9 @@ dependencies = [
 
 [[package]]
 name = "zim-studio"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
+ "anyhow",
  "atomic-write-file",
  "axum",
  "open",

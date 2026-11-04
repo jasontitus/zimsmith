@@ -472,6 +472,9 @@ impl<'a> Network<'a> {
     pub async fn get(&mut self, url: &Url) -> Result<(Url, String, Vec<u8>)> {
         self.get_with_purpose(url, false, false).await
     }
+    pub async fn rendering_delay(&mut self, url: &Url) -> Result<Duration> {
+        self.check_robots(url, self.delay).await
+    }
     pub async fn get_asset(&mut self, url: &Url) -> Result<(Url, String, Vec<u8>)> {
         let result = self.get_with_purpose(url, true, false).await;
         if let Err(error) = &result {
@@ -863,12 +866,23 @@ pub async fn scan(record: &Record) -> Result<()> {
                 "pages",
             )
             .await;
-        let result = network.get(&http_url(&page.url)?).await.and_then(|(url, mime, body)| {
+        let result = async {
+            let (mut url, mime, mut body) = network.get(&http_url(&page.url)?).await?;
             anyhow::ensure!(!mime.contains("html") || !is_challenge(&String::from_utf8_lossy(&body)), "The site returned a browser verification challenge instead of content. Pause and retry later, or import a saved page.");
-            Ok((url, mime, body))
-        });
+            let mut rendered = None;
+            if snapshot.config.capture.render_javascript && mime.contains("html") {
+                // Validate a redirect before executing any source JavaScript.
+                anyhow::ensure!(in_scope(&root, &url) || (page.depth == 0 && canonical_start_redirect(&root, &url)), "The source redirected outside the requested scope. Use its final URL explicitly.");
+                let delay = network.rendering_delay(&url).await?;
+                let captured = crate::render::capture(record, &url, &String::from_utf8_lossy(&body), delay).await?;
+                let effective = http_url(&captured.url)?;
+                anyhow::ensure!(in_scope(&url, &effective) || in_scope(&root, &effective), "JavaScript navigation left the requested scope: {effective}");
+                url = effective; body = captured.html.into_bytes(); rendered = Some(captured.info);
+            }
+            Ok::<_, anyhow::Error>((url, mime, body, rendered))
+        }.await;
         match result {
-            Ok((final_url, mime, body)) => {
+            Ok((final_url, mime, body, rendered)) => {
                 let adopt = page.depth == 0
                     && page.url == root.as_str()
                     && final_url != root
@@ -972,6 +986,7 @@ pub async fn scan(record: &Record) -> Result<()> {
                             thumbnail_url: None,
                             thumbnail_file: None,
                             embedded_in: vec![],
+                            rendered,
                         });
                         crate::embedded::register(j, &html, &entry_url, page.depth);
                     })
@@ -1006,6 +1021,7 @@ pub async fn scan(record: &Record) -> Result<()> {
                             thumbnail_url: None,
                             thumbnail_file: None,
                             embedded_in: vec![],
+                            rendered: None,
                         });
                     })
                     .await?;
@@ -1364,6 +1380,7 @@ mod tests {
             "error":null, "output":null, "output_bytes":null, "retry_at":null, "requests":0, "bytes":0
         })).unwrap();
         let record = Record {
+            renderer: Default::default(),
             job: Mutex::new(job),
             stop: Default::default(),
             running: Default::default(),
@@ -1522,6 +1539,7 @@ mod tests {
             "error":null, "output":null, "output_bytes":null, "retry_at":null, "requests":0, "bytes":0
         })).unwrap();
         let record = Record {
+            renderer: Default::default(),
             job: Mutex::new(job),
             stop: Default::default(),
             running: Default::default(),

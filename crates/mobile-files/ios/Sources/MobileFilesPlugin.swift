@@ -12,6 +12,20 @@ private struct FileArgs: Decodable {
 private struct SharedLinkArgs: Decodable { let id: String }
 
 final class MobileFilesPlugin: Plugin, UIDocumentPickerDelegate, UIDocumentInteractionControllerDelegate {
+    private var captures: [String: PageCapture] = [:]
+    @objc public func renderPage(_ invoke: Invoke) throws {
+        let args = try invoke.parseArgs(RenderPageArgs.self)
+        DispatchQueue.main.async {
+            guard self.captures.isEmpty, let host = self.manager.viewController?.view else { invoke.reject("The page browser is still stopping. Retry shortly."); return }
+            let capture = PageCapture(args, invoke: invoke) { [weak self] id in self?.captures.removeValue(forKey: id) }
+            self.captures[args.request.id] = capture
+            capture.start(in: host)
+        }
+    }
+    @objc public func cancelRender(_ invoke: Invoke) throws {
+        let id = try invoke.parseArgs(CancelRenderArgs.self).id
+        DispatchQueue.main.async { self.captures[id]?.cancel(); invoke.resolve(["cancelled": true]) }
+    }
     @objc public func sharedLinks(_ invoke: Invoke) throws {
         do { invoke.resolve(["items": try SharedURLInbox.appGroup().list()]) }
         catch { invoke.reject(error.localizedDescription) }

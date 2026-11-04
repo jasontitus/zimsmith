@@ -1,6 +1,7 @@
 import type { CaptureOptions, Config } from "./types";
 import { captureOptions } from "./capture";
 import { browserOnly } from "./browser/client";
+import { isTauri } from "@tauri-apps/api/core";
 export function CaptureSettings({
   config,
   onChange,
@@ -66,6 +67,49 @@ export function CaptureSettings({
       </div>
       {config.kind === "website" && (
         <>
+          {!browserOnly && (
+            <>
+              <label className="check-label">
+                <input
+                  type="checkbox"
+                  checked={c.render_javascript}
+                  disabled={!isTauri()}
+                  onChange={(e) =>
+                    update("render_javascript", e.target.checked)
+                  }
+                />
+                Render JavaScript before capturing
+              </label>
+              <p className="settings-note">
+                Use for stores and pages that load their content dynamically.
+                Runs on this device and loads page resources during scanning.
+                Browser captures always require review. Available in installed
+                apps.
+              </p>
+              {c.render_javascript && (
+                <>
+                  <label htmlFor="render-timeout">
+                    Rendering timeout per page (seconds)
+                  </label>
+                  <input
+                    id="render-timeout"
+                    type="number"
+                    min={10}
+                    max={180}
+                    value={c.render_timeout_secs}
+                    onChange={(e) =>
+                      update("render_timeout_secs", +e.target.value)
+                    }
+                  />
+                  <p className="settings-note">
+                    Up to 8 MB of rendered HTML per page. Browser traffic cannot
+                    be limited exactly, so clear the download budget to use this
+                    mode. Forms and checkout remain online-only.
+                  </p>
+                </>
+              )}
+            </>
+          )}
           <div className="form-grid">
             <div>
               <label htmlFor="include-urls">Include page URLs</label>

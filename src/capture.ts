@@ -1,6 +1,8 @@
 import type { CaptureOptions, Config } from "./types";
 
 export const captureDefaults: CaptureOptions = {
+  render_javascript: false,
+  render_timeout_secs: 45,
   embedded_videos: true,
   discover_sitemaps: false,
   include_urls: [],
@@ -27,6 +29,7 @@ export function normalizedCapture(config: Config): CaptureOptions {
     include_urls: value.include_urls.map((s) => s.trim()).filter(Boolean),
     exclude_urls: value.exclude_urls.map((s) => s.trim()).filter(Boolean),
     subtitle_language: value.subtitle_language.trim(),
+    render_javascript: config.kind === "website" && value.render_javascript,
   };
 }
 export function matchesRule(pattern: string, value: string) {
@@ -73,6 +76,16 @@ export function assetAllowed(config: Config, url: string, mime = "") {
 }
 export function validateCapture(config: Config) {
   const c = captureOptions(config);
+  if (
+    !Number.isInteger(c.render_timeout_secs) ||
+    c.render_timeout_secs < 10 ||
+    c.render_timeout_secs > 180
+  )
+    throw new Error("Browser rendering timeout must be 10–180 seconds.");
+  if (c.render_javascript && c.max_download_mb !== null)
+    throw new Error(
+      "Browser rendering cannot enforce a strict download budget. Disable rendering or clear the download budget.",
+    );
   if (c.seed_urls.length > 1000)
     throw new Error("Use at most 1000 additional starting URLs.");
   for (const source of c.seed_urls) {

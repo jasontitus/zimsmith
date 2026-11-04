@@ -1,7 +1,17 @@
+pub mod rendering;
 mod sharing;
 mod updates;
 use tauri::{Manager, State};
 use zim_engine::{templates, ArchiveTemplate, Engine, Job, NewJob, Settings};
+
+#[tauri::command]
+async fn refresh_javascript(engine: State<'_, Engine>, id: String) -> Result<Job, String> {
+    engine
+        .refresh_javascript(&id)
+        .await
+        .map(Job::view)
+        .map_err(|e| format!("{e:#}"))
+}
 
 #[tauri::command]
 async fn get_shared_links(_app: tauri::AppHandle) -> Result<Vec<sharing::SharedLink>, String> {
@@ -477,6 +487,9 @@ pub fn run() {
         .setup(|app| {
             let data = app.path().app_data_dir()?;
             let engine = tauri::async_runtime::block_on(Engine::open(data.clone()))?;
+            tauri::async_runtime::block_on(engine.set_page_renderer(std::sync::Arc::new(
+                rendering::BrowserRenderer::new(app.handle().clone()),
+            )));
             app.manage(engine);
             #[cfg(all(target_os = "android", feature = "direct-updates"))]
             app.manage(updates::Updater::new(
@@ -485,39 +498,52 @@ pub fn run() {
             ));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            get_shared_links,
-            dismiss_shared_link,
-            get_update_status,
-            check_app_updates,
-            configure_app_updates,
-            dismiss_app_update,
-            download_app_update,
-            capabilities,
-            archive_templates,
-            preview_archive_template,
-            get_settings,
-            update_settings,
-            list_jobs,
-            create_job,
-            get_job,
-            pause_job,
-            resume_job,
-            build_job,
-            edit_job,
-            rebuild_job,
-            repair_youtube_audio,
-            build_available_job,
-            delete_failed_job,
-            refresh_job,
-            begin_import,
-            import_offset,
-            import_chunk,
-            finish_import,
-            cancel_import,
-            export_archive,
-            open_archive
-        ])
+        .invoke_handler(|invoke| {
+            if invoke.message.webview().label().starts_with("capture-") {
+                invoke
+                    .resolver
+                    .reject("Capture pages cannot invoke application commands");
+                return true;
+            }
+            app_commands()(invoke)
+        })
         .run(tauri::generate_context!())
         .expect("Could not start Zim Studio");
+}
+
+fn app_commands() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
+    tauri::generate_handler![
+        refresh_javascript,
+        get_shared_links,
+        dismiss_shared_link,
+        get_update_status,
+        check_app_updates,
+        configure_app_updates,
+        dismiss_app_update,
+        download_app_update,
+        capabilities,
+        archive_templates,
+        preview_archive_template,
+        get_settings,
+        update_settings,
+        list_jobs,
+        create_job,
+        get_job,
+        pause_job,
+        resume_job,
+        build_job,
+        edit_job,
+        rebuild_job,
+        repair_youtube_audio,
+        build_available_job,
+        delete_failed_job,
+        refresh_job,
+        begin_import,
+        import_offset,
+        import_chunk,
+        finish_import,
+        cancel_import,
+        export_archive,
+        open_archive
+    ]
 }

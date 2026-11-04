@@ -1,0 +1,5 @@
+Add optional on-device JavaScript rendering for website crawls. Capture hydrated and API-loaded content, lazy images, recognized Load more controls, accessible list pagination, and Hostinger product catalogs. The same renderer works across sites and frameworks.
+
+Review rendered pages before downloading, see incomplete-capture warnings and progress, pause/resume, and rescan an existing collection with JavaScript while preserving its current ZIM. Observed 429/503 responses use Retry-After backoff.
+
+Rendering requires an installed app and loads page resources during scanning. Strict download budgets must be cleared. Android requires a current System WebView. Logins, live forms, and arbitrary interactive workflows are not captured.

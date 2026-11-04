@@ -135,7 +135,11 @@ export function SavedContentImport({
           title: title.trim(),
           url: "https://local-import.invalid/",
           kind: "website",
-          capture: { ...normalizedCapture(config), seed_urls: [] },
+          capture: {
+            ...normalizedCapture(config),
+            seed_urls: [],
+            render_javascript: false,
+          },
         },
         files.map((file) => ({ path: path(file), size: file.size })),
         resumeId || attempt.current,

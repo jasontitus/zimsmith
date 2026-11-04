@@ -22,6 +22,8 @@ impl VideoQuality {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct CaptureOptions {
+    pub render_javascript: bool,
+    pub render_timeout_secs: u64,
     pub embedded_videos: bool,
     pub discover_sitemaps: bool,
     pub include_urls: Vec<String>,
@@ -41,6 +43,8 @@ pub struct CaptureOptions {
 impl Default for CaptureOptions {
     fn default() -> Self {
         Self {
+            render_javascript: false,
+            render_timeout_secs: 45,
             embedded_videos: true,
             discover_sitemaps: false,
             include_urls: vec![],
@@ -110,6 +114,11 @@ pub fn linked_asset(url: &url::Url) -> bool {
 }
 impl CaptureOptions {
     pub fn validate(&self, source: &url::Url) -> Result<()> {
+        anyhow::ensure!(
+            (10..=180).contains(&self.render_timeout_secs),
+            "Browser rendering timeout must be 10–180 seconds"
+        );
+        anyhow::ensure!(!self.render_javascript || self.max_download_mb.is_none(), "Browser rendering cannot enforce a strict download budget. Disable rendering or clear the download budget.");
         anyhow::ensure!(
             self.seed_urls.len() <= 1000,
             "Use at most 1000 starting URLs"

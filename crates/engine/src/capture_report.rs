@@ -5,6 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Summary {
+    #[serde(default)]
+    pub javascript_pages: usize,
     pub captured_items: usize,
     pub saved_assets: usize,
     pub omitted_assets: usize,
@@ -100,6 +102,14 @@ pub async fn write(
     let mut limited = false;
     let selector = scraper::Selector::parse("a[href]").unwrap();
     for entry in selected {
+        if let Some(rendered) = &entry.rendered {
+            summary.javascript_pages += 1;
+            for warning in &rendered.warnings {
+                if summary.warnings.len() < 30 {
+                    summary.warnings.push(format!("{}: {warning}", entry.title));
+                }
+            }
+        }
         if job.config.capture.subtitles {
             summary.subtitle_tracks += entry.subtitles.len();
             summary.caption_gaps += usize::from(entry.subtitle_error.is_some());
@@ -159,6 +169,9 @@ pub async fn write(
             }
         }
     }
+    if summary.javascript_pages > 0 {
+        summary.warnings.push("Browser rendering loaded scripts and page resources during the scan. Browser transfer counts are estimates and may omit cross-origin responses; checkout, forms, and source JavaScript are not retained for offline use.".into());
+    }
     summary.online_links = online.len();
     if embedded_videos > 0 {
         summary.warnings.push(format!("{embedded_videos} embedded YouTube videos are labeled as online links. Their thumbnails are saved; the movies were not downloaded in this website capture."));
@@ -197,6 +210,7 @@ pub async fn write(
         ("Excluded by settings", summary.excluded_assets),
         ("Failed assets", summary.failed_assets),
         ("Online-only links", summary.online_links),
+        ("Browser-rendered pages", summary.javascript_pages),
         ("Subtitle tracks", summary.subtitle_tracks),
         ("Caption gaps", summary.caption_gaps),
     ]

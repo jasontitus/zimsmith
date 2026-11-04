@@ -41,6 +41,10 @@ export const defaults = {
 };
 export function validate(config: Config) {
   validateCapture(config);
+  if (config.capture?.render_javascript)
+    throw new Error(
+      "JavaScript rendering requires the installed Zimsmith app. Browser builds can import saved HTML instead.",
+    );
   const url = new URL(config.url);
   if (
     !["http:", "https:"].includes(url.protocol) ||

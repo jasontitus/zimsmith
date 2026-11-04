@@ -99,6 +99,10 @@ impl NewJob {
     pub fn validate(&self) -> anyhow::Result<()> {
         self.capture.validate(&super::web::http_url(&self.url)?)?;
         anyhow::ensure!(
+            !self.capture.render_javascript || self.kind == SourceKind::Website,
+            "Browser rendering applies to website crawls"
+        );
+        anyhow::ensure!(
             self.kind == SourceKind::Website || self.capture.seed_urls.is_empty(),
             "URL lists support websites; use a channel or playlist for media collections"
         );
@@ -134,6 +138,8 @@ impl NewJob {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Entry {
+    #[serde(default)]
+    pub rendered: Option<crate::render::RenderInfo>,
     /// Website pages which reference this deduplicated, separately approved video.
     #[serde(default)]
     pub embedded_in: Vec<String>,
@@ -370,7 +376,11 @@ impl Job {
 
     pub fn can_auto_start(&self) -> bool {
         self.refresh.is_none()
-            && self.entries.iter().all(|e| e.embedded_in.is_empty())
+            && !self.config.capture.render_javascript
+            && self
+                .entries
+                .iter()
+                .all(|e| e.embedded_in.is_empty() && e.rendered.is_none())
             && self.auto_start_item_limit.is_some_and(|limit| {
                 !self.scan_truncated
                     && !self.entries.is_empty()

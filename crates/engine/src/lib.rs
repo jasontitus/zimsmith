@@ -11,6 +11,7 @@ pub mod model;
 mod mux;
 mod native_media;
 pub mod refresh;
+pub mod render;
 mod robots_cache;
 mod sitemap;
 mod snapshot;
@@ -33,6 +34,7 @@ use std::{
 use tokio::sync::{Mutex, Notify, RwLock};
 
 pub struct Record {
+    pub renderer: render::RendererSlot,
     pub job: Mutex<Job>,
     pub stop: Notify,
     pub running: AtomicBool,
@@ -87,6 +89,7 @@ impl Record {
 
 #[derive(Clone)]
 pub struct Engine {
+    renderer: render::RendererSlot,
     root: PathBuf,
     jobs: Arc<RwLock<HashMap<String, Arc<Record>>>>,
     settings: Arc<RwLock<Settings>>,
@@ -107,6 +110,7 @@ impl Engine {
         };
         settings.validate()?;
         let engine = Self {
+            renderer: Default::default(),
             root: root.clone(),
             jobs: Default::default(),
             settings: Arc::new(RwLock::new(settings)),
@@ -139,6 +143,7 @@ impl Engine {
                 );
             }
             let record = Arc::new(Record {
+                renderer: engine.renderer.clone(),
                 job: Mutex::new(job.clone()),
                 stop: Notify::new(),
                 running: AtomicBool::new(false),
@@ -197,6 +202,7 @@ impl Engine {
             .collect::<Result<Vec<_>>>()?;
         let detected_media = config.detect_media_source();
         config.validate()?;
+        anyhow::ensure!(!start || !config.capture.render_javascript || self.renderer.read().await.is_some(), "Browser rendering is unavailable in this build. Use the installed app, static capture, or import saved HTML.");
         let settings = self.settings().await;
         let id = uuid::Uuid::new_v4().to_string();
         let mut job = Job {
@@ -242,6 +248,7 @@ impl Engine {
         let dir = self.root.join(&id);
         tokio::fs::create_dir_all(dir.join("cache")).await?;
         let record = Arc::new(Record {
+            renderer: self.renderer.clone(),
             job: Mutex::new(job.clone()),
             stop: Notify::new(),
             running: AtomicBool::new(false),
@@ -361,8 +368,8 @@ impl Engine {
         {
             let mut current = record.job.lock().await;
             anyhow::ensure!(
-                ["failed", "paused"].contains(&current.status.as_str()),
-                "Pause the crawl or wait for it to fail before editing"
+                ["failed", "paused", "review"].contains(&current.status.as_str()),
+                "Pause the crawl or finish its scan before editing"
             );
             anyhow::ensure!(
                 current.import.is_none(),
@@ -379,7 +386,9 @@ impl Engine {
                 || config.capture.exclude_urls != current.config.capture.exclude_urls
                 || config.capture.embedded_videos != current.config.capture.embedded_videos
                 || config.capture.discover_sitemaps != current.config.capture.discover_sitemaps
-                || config.capture.media != current.config.capture.media;
+                || config.capture.media != current.config.capture.media
+                || config.capture.render_javascript != current.config.capture.render_javascript
+                || config.capture.render_timeout_secs != current.config.capture.render_timeout_secs;
             let mut job = current.clone();
             if config.capture.video_quality != current.config.capture.video_quality
                 && (config.kind == SourceKind::Media
@@ -716,7 +725,11 @@ async fn drive(record: &Record) -> Result<()> {
         record
             .progress("Scanning source metadata", 0, None, "items")
             .await;
-        record.log("info", "Scanning metadata only. Website HTML is cached; media and page assets wait until scanning finishes and the download is approved.").await?;
+        if job.config.capture.render_javascript {
+            record.log("info", "Browser scan: source scripts and page resources load on this device to discover rendered content. Videos wait for approval; review is always required.").await?;
+        } else {
+            record.log("info", "Scanning metadata only. Website HTML is cached; media and page assets wait until scanning finishes and the download is approved.").await?;
+        }
         match job.config.kind {
             SourceKind::Website => web::scan(record).await?,
             SourceKind::Media => media::scan(record).await?,

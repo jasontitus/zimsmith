@@ -89,6 +89,7 @@ pub(crate) fn entry(
         thumbnail_url: Some(format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg")),
         thumbnail_file: None,
         embedded_in: vec![],
+        rendered: None,
     }
 }
 
@@ -144,6 +145,7 @@ pub async fn scan(record: &Record) -> Result<()> {
                     thumbnail_url: None,
                     thumbnail_file: None,
                     embedded_in: vec![],
+                    rendered: None,
                 }];
                 j.queue.clear();
                 j.requests += 1;

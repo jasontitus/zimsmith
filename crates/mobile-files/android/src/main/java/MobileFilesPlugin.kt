@@ -39,10 +39,40 @@ class WebUrlArgs { lateinit var url: String }
 @InvokeArg
 class SharedLinkArgs { lateinit var id: String }
 
+@InvokeArg
+class RenderPageArgs { lateinit var request: BrowserRenderRequest; lateinit var script: String }
+
+@InvokeArg
+class BrowserRenderRequest {
+    lateinit var id: String
+    lateinit var url: String
+    var delay_ms: Long = 1000
+    var timeout_secs: Long = 45
+    var max_html_bytes: Long = 8388608
+    lateinit var scopes: List<String>
+}
+
 class ZimFileProvider : FileProvider()
 
 @TauriPlugin
 class MobileFilesPlugin(private val activity: Activity): Plugin(activity) {
+    private val captures = mutableMapOf<String, PageCapture>()
+    @Command
+    fun renderPage(invoke: Invoke) {
+        val args = invoke.parseArgs(RenderPageArgs::class.java)
+        activity.runOnUiThread {
+            if (captures.isNotEmpty()) { invoke.reject("The page browser is still stopping. Retry shortly."); return@runOnUiThread }
+            val id = args.request.id
+            val capture = PageCapture(activity, args, invoke) { captures.remove(it) }
+            captures[id] = capture
+            try { capture.start() } catch (error: Exception) { capture.abort(error.message ?: "Could not start the page browser"); }
+        }
+    }
+    @Command
+    fun cancelRender(invoke: Invoke) {
+        val id = invoke.parseArgs(SharedLinkArgs::class.java).id
+        activity.runOnUiThread { captures[id]?.cancel(); invoke.resolve(JSObject().put("cancelled", true)) }
+    }
     @Command
     fun sharedLinks(invoke: Invoke) {
         try { invoke.resolve(JSObject().put("items", SharedLinks.list(activity))) }
@@ -57,6 +87,10 @@ class MobileFilesPlugin(private val activity: Activity): Plugin(activity) {
         } catch (error: Exception) { invoke.reject(error.message ?: "Could not dismiss the shared link.") }
     }
     override fun load(webView: WebView) {
+        if (androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.MULTI_PROFILE)) {
+            val profiles = androidx.webkit.ProfileStore.getInstance()
+            for (name in profiles.allProfileNames.filter { it.startsWith("zimsmith-capture-") }) { try { profiles.deleteProfile(name) } catch (_: Exception) {} }
+        }
         webView.settings.setSupportZoom(false)
         webView.settings.builtInZoomControls = false
         webView.settings.displayZoomControls = false

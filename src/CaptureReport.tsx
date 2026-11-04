@@ -15,6 +15,7 @@ export function CaptureReport({ job }: { job: Job }) {
       <dl>
         {[
           ["Captured items", report.captured_items],
+          ["Browser-rendered pages", report.javascript_pages || 0],
           ["Saved assets", report.saved_assets],
           ["Omitted assets", report.omitted_assets],
           ["Excluded by settings", report.excluded_assets],

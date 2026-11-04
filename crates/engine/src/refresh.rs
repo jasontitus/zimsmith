@@ -136,6 +136,12 @@ pub async fn compare(record: &Record) -> Result<()> {
 
 impl crate::Engine {
     pub async fn refresh_collection(&self, id: &str) -> Result<Job> {
+        self.refresh_options(id, false).await
+    }
+    pub async fn refresh_javascript(&self, id: &str) -> Result<Job> {
+        self.refresh_options(id, true).await
+    }
+    async fn refresh_options(&self, id: &str, javascript: bool) -> Result<Job> {
         use std::sync::atomic::Ordering;
         let record = self.record(id).await?;
         let mut current = record.job.lock().await;
@@ -148,6 +154,18 @@ impl crate::Engine {
             "Finish the current archive before refreshing"
         );
         let mut next = current.clone();
+        if javascript {
+            anyhow::ensure!(
+                next.config.kind == SourceKind::Website,
+                "JavaScript rendering applies to website crawls"
+            );
+            anyhow::ensure!(
+                self.renderer.read().await.is_some(),
+                "Browser rendering is unavailable in this build"
+            );
+            next.config.capture.render_javascript = true;
+            next.config.validate()?;
+        }
         next.sitemap_checkpoint = Default::default();
         let mut refresh = RefreshState {
             previous: next.entries.clone(),
