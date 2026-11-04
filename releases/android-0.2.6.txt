@@ -1,0 +1,3 @@
+Recover linked images, stylesheets, and fonts when a recognized external static CDN's policy endpoint is unavailable. Keep page-crawl rules, explicit denials, 429/503 and Retry-After handling, MIME checks, and download limits. Recovery is recorded once in Activity and in the capture report.
+
+Stop once on a host-wide outage and leave other files queued for Resume instead of reporting the same failure for every asset. Verified all 55 previously failing images through the crawler: zero failures, about 31 MB.

@@ -56,6 +56,10 @@ Static mode captures server-rendered HTML (up to 8 MB per page). Installed apps 
 
 Progress shows the actual request, including robots.txt checks. Each robots.txt request times out after 15 seconds; an unavailable policy is checkpointed for 60 seconds so Resume and other assets do not immediately repeat it. Successful policies are cached for an hour. Server cooldowns and robots exclusions still apply.
 
+Installed apps can recover linked images, stylesheets, and fonts on recognized external static CDNs when the policy endpoint times out or has an origin error. These are fetched as browser assets, with a single activity notice and a capture-report warning. The exception does not apply to the crawl’s own origin, unknown hosts, HTML, APIs, scripts or documents. Explicit robots denials, 429/503 responses, Retry-After, file-type checks, and download limits remain enforced. Hostinger’s static CDN uses the same fast-asset pacing as other known CDNs.
+
+A host-wide outage stops downloading once and keeps the remaining assets queued for Resume. It does not mark every remaining file as a separate failed request.
+
 For a paused or failed website download, **Build with available files** packages all selected cached pages and saved assets without more requests. Missing images, styles, or fonts are disclosed on the archive home page and in its capture report. Resume instead if you want to retry the missing downloads.
 
 Open a failed attempt in **Activity**, choose **Delete failed attempt**, then confirm. This removes its activity entry and internal downloads, including any internal ZIM. Copies you previously exported remain in Files or Downloads. Running and paused jobs cannot be deleted through this action.

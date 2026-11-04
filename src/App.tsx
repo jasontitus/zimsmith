@@ -816,8 +816,8 @@ export default function App() {
                             />
                             <p id="delay-help" className="settings-note">
                               Pages and ordinary hosts use this delay. Known
-                              static CDNs skip it; robots and rate limits still
-                              apply.
+                              static CDNs skip it; known robots rules and rate
+                              limits still apply.
                             </p>
                           </div>
                           <div>

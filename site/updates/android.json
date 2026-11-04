@@ -4,15 +4,15 @@
   "channel": "direct",
   "releases": [
     {
-      "version": "0.2.5",
-      "version_code": 2005,
+      "version": "0.2.6",
+      "version_code": 2006,
       "abi": "arm64-v8a",
       "min_sdk": 24,
-      "url": "https://github.com/jasontitus/zimsmith/releases/download/v0.2.5/Zimsmith-0.2.5-arm64-v8a-e6a8fa81f89c.apk",
-      "sha256": "e6a8fa81f89c3c2cb6fae7ad798a06d366e16a659835437a59a62fd5fb22292c",
+      "url": "https://github.com/jasontitus/zimsmith/releases/download/v0.2.6/Zimsmith-0.2.6-arm64-v8a-48a796094fce.apk",
+      "sha256": "48a796094fcebf5f8e590fab2b9e9e4785b9541dbb6aee461af7a5ed8b90511c",
       "certificate_sha256": "f05a21df94164c0695b4e422bb413e2b7e5971ef44ecab3e2666faacb287aa89",
-      "size_bytes": 40557197,
-      "notes": "Automatically render detected dynamic catalogs and empty app shells in installed apps. Page loading is visible above advanced settings; static-only scans offer Enable JavaScript and rescan when content is missing.\n\nFix catalog pagination being delayed by image animations and layout changes. Preserve collected cards when a timeout occurs during a loading skeleton, and show live list-item counts and progress. Verified against the reported catalog on an actual iPhone: all 59 product cards across 10 pages in about 22 seconds.\n\nBrowser rendering still requires a cleared download budget, and rendered scans require review. Source/CDN download failures remain visible separately from discovery."
+      "size_bytes": 40585869,
+      "notes": "Recover linked images, stylesheets, and fonts when a recognized external static CDN's policy endpoint is unavailable. Keep page-crawl rules, explicit denials, 429/503 and Retry-After handling, MIME checks, and download limits. Recovery is recorded once in Activity and in the capture report.\n\nStop once on a host-wide outage and leave other files queued for Resume instead of reporting the same failure for every asset. Verified all 55 previously failing images through the crawler: zero failures, about 31 MB."
     }
   ]
 }

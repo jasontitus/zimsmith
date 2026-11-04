@@ -133,6 +133,73 @@ struct Policy {
     text: String,
     delay: Duration,
 }
+
+#[derive(Debug)]
+struct RetryFailure {
+    status: u16,
+    retry_after: bool,
+    url: String,
+    attempts: u32,
+}
+impl std::fmt::Display for RetryFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "HTTP {} after {} attempt(s): {}",
+            self.status, self.attempts, self.url
+        )
+    }
+}
+impl std::error::Error for RetryFailure {}
+
+#[derive(Debug)]
+struct UnavailablePolicy {
+    message: String,
+    passive_fallback: bool,
+}
+impl std::fmt::Display for UnavailablePolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.message.fmt(f)
+    }
+}
+impl std::error::Error for UnavailablePolicy {}
+
+fn passive_policy_failure(error: &anyhow::Error) -> bool {
+    error.chain().any(|error| {
+        error
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(|e| e.is_timeout() && !e.is_connect())
+            || error
+                .downcast_ref::<RetryFailure>()
+                .is_some_and(|e| e.status >= 500 && e.status != 503 && !e.retry_after)
+    })
+}
+
+fn passive_cdn_asset(url: &Url) -> bool {
+    if !is_static_cdn(url) {
+        return false;
+    }
+    let path = url.path().to_ascii_lowercase();
+    let ext = path.rsplit('.').next().unwrap_or("");
+    [
+        "png", "jpg", "jpeg", "gif", "svg", "webp", "avif", "ico", "css", "woff", "woff2", "ttf",
+        "otf", "eot",
+    ]
+    .contains(&ext)
+        || (url.host_str() == Some("fonts.googleapis.com")
+            && matches!(path.as_str(), "/css" | "/css2"))
+}
+
+fn host_failure(error: &anyhow::Error) -> bool {
+    error.chain().any(|error| {
+        error.is::<UnavailablePolicy>()
+            || error.is::<RetryFailure>()
+            || error
+                .downcast_ref::<reqwest::Error>()
+                .is_some_and(|e| e.is_timeout() || e.is_connect())
+    })
+}
+
 pub struct Network<'a> {
     record: &'a Record,
     client: Client,
@@ -140,6 +207,7 @@ pub struct Network<'a> {
     cap: u64,
     robots: HashMap<String, Policy>,
     robots_timeout: Duration,
+    cdn_notices: std::collections::BTreeSet<String>,
 }
 
 impl<'a> Network<'a> {
@@ -156,6 +224,7 @@ impl<'a> Network<'a> {
             cap: job.config.max_resource_mb * 1024 * 1024,
             robots: HashMap::new(),
             robots_timeout: Duration::from_secs(15),
+            cdn_notices: Default::default(),
         })
     }
     pub fn declared_sitemaps(&self, url: &Url) -> Vec<String> {
@@ -246,7 +315,13 @@ impl<'a> Network<'a> {
                         // Keep the final rate-limit cooldown too: another job
                         // or a quick Resume must not immediately hit this host.
                         if attempt + 1 == attempts {
-                            bail!("{} after {attempts} attempt(s): {}", status, url);
+                            return Err(RetryFailure {
+                                status: status.as_u16(),
+                                retry_after: headers.contains_key("retry-after"),
+                                url: url.to_string(),
+                                attempts,
+                            }
+                            .into());
                         }
                         tokio::time::sleep(wait).await;
                         self.record.change(|j| j.retry_at = None).await?;
@@ -346,7 +421,12 @@ impl<'a> Network<'a> {
                 return self.check_robots_uncached(url, baseline).await;
             }
             if cached.error.is_some() || cached.attempts >= 2 {
-                bail!("Cannot safely read {origin}/robots.txt: {}. Retry in {}s, or pause and build with the available files.", cached.error.as_deref().unwrap_or("The previous policy checks were interrupted"), cached.valid_until.saturating_sub(now()));
+                let message = format!("Cannot safely read {origin}/robots.txt: {}. Retry in {}s, or pause and build with the available files.", cached.error.as_deref().unwrap_or("The previous policy checks were interrupted"), cached.valid_until.saturating_sub(now()));
+                return Err(UnavailablePolicy {
+                    message,
+                    passive_fallback: cached.passive_fallback,
+                }
+                .into());
             }
         }
         // Persist before requesting: repeated pause/resume cannot reset an
@@ -361,11 +441,14 @@ impl<'a> Network<'a> {
                 delay_ms: 0,
                 error: None,
                 attempts,
+                passive_fallback: false,
             },
         )
         .await?;
         let result = self.check_robots_uncached(url, baseline).await;
+        let passive_fallback = result.as_ref().err().is_some_and(passive_policy_failure);
         let policy = self.robots.get(&origin);
+        let unavailable = policy.is_none();
         robots_cache::save(
             self.record,
             &Checkpoint {
@@ -379,10 +462,21 @@ impl<'a> Network<'a> {
                     result.as_ref().err().map(|e| format!("{e:#}"))
                 },
                 attempts,
+                passive_fallback,
             },
         )
         .await?;
-        result
+        result.map_err(|error| {
+            if unavailable {
+                UnavailablePolicy {
+                    message: format!("{error:#}"),
+                    passive_fallback,
+                }
+                .into()
+            } else {
+                error
+            }
+        })
     }
 
     async fn check_robots_uncached(&mut self, url: &Url, baseline: Duration) -> Result<Duration> {
@@ -510,7 +604,35 @@ impl<'a> Network<'a> {
             } else {
                 self.delay
             };
-            let delay = self.check_robots(&url, baseline).await?;
+            let (delay, passive_fallback) = match self.check_robots(&url, baseline).await {
+                Ok(delay) => (delay, false),
+                Err(error) => {
+                    let external = {
+                        let job = self.record.job.lock().await;
+                        job.config.kind == SourceKind::Website
+                            && !job
+                                .config
+                                .starting_pages()
+                                .iter()
+                                .filter_map(|p| http_url(&p.url).ok())
+                                .any(|root| root.origin() == url.origin())
+                    };
+                    if !asset
+                        || !external
+                        || !passive_cdn_asset(&url)
+                        || !error
+                            .downcast_ref::<UnavailablePolicy>()
+                            .is_some_and(|failure| failure.passive_fallback)
+                    {
+                        return Err(error);
+                    }
+                    let origin = url.origin().ascii_serialization();
+                    if self.cdn_notices.insert(origin.clone()) {
+                        self.record.log("warning",format!("The policy endpoint at {origin} is unreachable. Fetching this page's linked images, styles and fonts as browser assets. Explicit denials, HTTP failures, rate-limit cooldowns and download limits still apply.")).await?;
+                    }
+                    (baseline, true)
+                }
+            };
             let cached = if asset {
                 self.record
                     .job
@@ -554,6 +676,20 @@ impl<'a> Network<'a> {
             let (status, headers, body) = self
                 .raw(&url, delay, self.cap, false, asset, conditional)
                 .await?;
+            if passive_fallback && status.is_success() {
+                let mime = headers
+                    .get("content-type")
+                    .and_then(|h| h.to_str().ok())
+                    .unwrap_or("");
+                anyhow::ensure!(
+                    mime.starts_with("image/")
+                        || mime.starts_with("font/")
+                        || mime.starts_with("text/css")
+                        || mime.starts_with("application/font")
+                        || mime.starts_with("application/x-font"),
+                    "The CDN returned {mime} instead of an image, stylesheet or font: {url}"
+                );
+            }
             if status == StatusCode::NOT_MODIFIED {
                 let resource = cached.context("Server returned 304 without a cached asset")?;
                 let body =
@@ -1175,6 +1311,7 @@ pub async fn download(record: &Record) -> Result<()> {
                 }
                 Err(error) => {
                     let message = format!("{error:#}");
+                    let stop = host_failure(&error);
                     record
                         .change(|j| {
                             let r = j.resources.get_mut(&resource.url).unwrap();
@@ -1188,6 +1325,9 @@ pub async fn download(record: &Record) -> Result<()> {
                             j.log("warning", message);
                         })
                         .await?;
+                    if stop {
+                        return Err(error.context(format!("Downloads stopped for {}. Remaining files are still queued; Resume retries after the server cooldown.", http_url(&resource.url)?.origin().ascii_serialization())));
+                    }
                 }
             }
         }
@@ -1653,6 +1793,248 @@ mod tests {
             .to_string()
             .contains("Blocked by robots.txt"));
     }
+    #[tokio::test]
+    async fn unavailable_external_cdn_policy_recovers_passive_assets_without_relaxing_page_rules() {
+        use axum::{extract::State, response::IntoResponse, routing::get, Router};
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        #[derive(Default)]
+        struct Hits {
+            robots: AtomicUsize,
+            images: AtomicUsize,
+        }
+        let hits = Arc::new(Hits::default());
+        let app = Router::new()
+            .route(
+                "/robots.txt",
+                get(|State(hits): State<Arc<Hits>>| async move {
+                    hits.robots.fetch_add(1, Ordering::SeqCst);
+                    (StatusCode::from_u16(522).unwrap(), "unavailable")
+                }),
+            )
+            .route(
+                "/{file}",
+                get(|State(hits): State<Arc<Hits>>| async move {
+                    hits.images.fetch_add(1, Ordering::SeqCst);
+                    ([("Content-Type", "image/jpeg")], "image bytes").into_response()
+                }),
+            )
+            .with_state(hits.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let temp = tempfile::tempdir().unwrap();
+        let engine = crate::Engine::open(temp.path()).await.unwrap();
+        let config:NewJob=serde_json::from_value(serde_json::json!({"url":"https://example.com/","title":"CDN recovery","kind":"website","max_items":10,"max_depth":1,"delay_ms":1000,"max_resource_mb":1,"language":"eng","description":"CDN recovery fixture","creator":"Fixture","include_assets":true})).unwrap();
+        let job = engine.create_record(config, false).await.unwrap();
+        let record = engine.record(&job.id).await.unwrap();
+        let client = || {
+            Client::builder()
+                .no_proxy()
+                .resolve("cdn.zyrosite.com", address)
+                .build()
+                .unwrap()
+        };
+        let url = |path: &str| {
+            http_url(&format!(
+                "http://cdn.zyrosite.com:{}/{path}",
+                address.port()
+            ))
+            .unwrap()
+        };
+        let mut network = Network::new(&record).await.unwrap();
+        network.client = client();
+        assert!(network.get_asset(&url("one.jpg")).await.is_ok());
+        assert!(network.get_asset(&url("two.jpg")).await.is_ok());
+        assert_eq!(hits.robots.load(Ordering::SeqCst), 1);
+        assert_eq!(hits.images.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            record
+                .job
+                .lock()
+                .await
+                .logs
+                .iter()
+                .filter(|log| log.message.contains("as browser assets"))
+                .count(),
+            1
+        );
+        // Restarting the network keeps the negative policy classification but does not refetch it.
+        let mut resumed = Network::new(&record).await.unwrap();
+        resumed.client = client();
+        assert!(resumed.get_asset(&url("three.jpg")).await.is_ok());
+        assert_eq!(hits.robots.load(Ordering::SeqCst), 1);
+        // The exception never applies to pages, API/script/document paths, or this host as a crawl source.
+        assert!(resumed.get(&url("page.jpg")).await.is_err());
+        for path in ["index.html", "app.js", "catalog.json", "document.pdf"] {
+            assert!(resumed.get_asset(&url(path)).await.is_err());
+        }
+        record.job.lock().await.config.url = url("").to_string();
+        assert!(resumed.get_asset(&url("same-origin.jpg")).await.is_err());
+        assert_eq!(hits.images.load(Ordering::SeqCst), 3);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn cdn_recovery_preserves_denials_rate_limits_retry_after_and_content_types() {
+        use axum::{
+            extract::{Path, State},
+            http::HeaderMap,
+            response::IntoResponse,
+            routing::get,
+            Router,
+        };
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        let hits = Arc::new(AtomicUsize::new(0));
+        async fn robots(headers: HeaderMap) -> axum::response::Response {
+            let host = headers["host"].to_str().unwrap().split(':').next().unwrap();
+            match host {
+                "fonts.bunny.net" => (StatusCode::FORBIDDEN, "denied").into_response(),
+                "fonts.gstatic.com" => (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    [("Retry-After", "1")],
+                    "wait",
+                )
+                    .into_response(),
+                "cdnjs.cloudflare.com" => (StatusCode::SERVICE_UNAVAILABLE, "wait").into_response(),
+                "unpkg.com" => {
+                    (StatusCode::BAD_GATEWAY, [("Retry-After", "1")], "wait").into_response()
+                }
+                _ => (StatusCode::from_u16(522).unwrap(), "unavailable").into_response(),
+            }
+        }
+        async fn asset(
+            State(hits): State<Arc<AtomicUsize>>,
+            Path(path): Path<String>,
+        ) -> axum::response::Response {
+            hits.fetch_add(1, Ordering::SeqCst);
+            if path == "wrong.css" {
+                (
+                    [("Content-Type", "text/html")],
+                    "<html>not a stylesheet</html>",
+                )
+                    .into_response()
+            } else {
+                ([("Content-Type", "image/jpeg")], "image").into_response()
+            }
+        }
+        let app = Router::new()
+            .route("/robots.txt", get(robots))
+            .route("/{file}", get(asset))
+            .with_state(hits.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        for host in [
+            "fonts.bunny.net",
+            "fonts.gstatic.com",
+            "cdnjs.cloudflare.com",
+            "unpkg.com",
+            "cdn.zyrosite.com.example.test",
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let engine = crate::Engine::open(temp.path()).await.unwrap();
+            let config:NewJob=serde_json::from_value(serde_json::json!({"url":"https://example.com/","title":"CDN guard","kind":"website","max_items":1,"max_depth":0,"delay_ms":1000,"max_resource_mb":1,"language":"eng","description":"Guard fixture","creator":"Fixture","include_assets":true})).unwrap();
+            let job = engine.create_record(config, false).await.unwrap();
+            let record = engine.record(&job.id).await.unwrap();
+            let mut network = Network::new(&record).await.unwrap();
+            network.client = Client::builder()
+                .no_proxy()
+                .resolve(host, address)
+                .build()
+                .unwrap();
+            let url = http_url(&format!("http://{host}:{}/image.jpg", address.port())).unwrap();
+            assert!(network.get_asset(&url).await.is_err(), "{host}");
+        }
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+        let temp = tempfile::tempdir().unwrap();
+        let engine = crate::Engine::open(temp.path()).await.unwrap();
+        let config:NewJob=serde_json::from_value(serde_json::json!({"url":"https://example.com/","title":"CDN MIME","kind":"website","max_items":1,"max_depth":0,"delay_ms":1000,"max_resource_mb":1,"language":"eng","description":"MIME fixture","creator":"Fixture","include_assets":true})).unwrap();
+        let job = engine.create_record(config, false).await.unwrap();
+        let record = engine.record(&job.id).await.unwrap();
+        let mut network = Network::new(&record).await.unwrap();
+        network.client = Client::builder()
+            .no_proxy()
+            .resolve("cdn.zyrosite.com", address)
+            .build()
+            .unwrap();
+        let error = network
+            .get_asset(
+                &http_url(&format!(
+                    "http://cdn.zyrosite.com:{}/wrong.css",
+                    address.port()
+                ))
+                .unwrap(),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("instead of an image"));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn host_outages_stop_once_and_keep_other_assets_queued_for_resume() {
+        use axum::{routing::get, Router};
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        let hits = Arc::new(AtomicUsize::new(0));
+        let count = hits.clone();
+        let app = Router::new().route(
+            "/robots.txt",
+            get(move || {
+                let count = count.clone();
+                async move {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        [("Retry-After", "1")],
+                        "wait",
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let temp = tempfile::tempdir().unwrap();
+        let engine = crate::Engine::open(temp.path()).await.unwrap();
+        let source = format!("http://{address}/");
+        let config:NewJob=serde_json::from_value(serde_json::json!({"url":source,"title":"Queued recovery","kind":"website","max_items":1,"max_depth":0,"delay_ms":1000,"max_resource_mb":1,"language":"eng","description":"Outage fixture","creator":"Fixture","include_assets":true})).unwrap();
+        let job = engine.create_record(config, false).await.unwrap();
+        let record = engine.record(&job.id).await.unwrap();
+        let entry:Entry=serde_json::from_value(serde_json::json!({"id":"page","url":source,"title":"Page","depth":0,"selected":true,"state":"pending","size":null,"duration":null,"error":null,"text":"Saved page","assets":[format!("http://{address}/one.png"),format!("http://{address}/two.png"),format!("http://{address}/three.png")],"media_file":null})).unwrap();
+        record.change(|job| job.entries.push(entry)).await.unwrap();
+        let error = download(&record).await.unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Remaining files are still queued"));
+        let job = record.job.lock().await;
+        assert_eq!(
+            job.resources
+                .values()
+                .filter(|r| r.state == "failed")
+                .count(),
+            1
+        );
+        assert_eq!(
+            job.resources
+                .values()
+                .filter(|r| r.state == "pending")
+                .count(),
+            2
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert!(job.retry_at.is_some());
+        server.abort();
+    }
+
     #[test]
     fn accepts_hostname_sources_without_repairing_unsafe_schemes_or_discovered_links() {
         for (input, expected) in [

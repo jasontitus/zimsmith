@@ -98,6 +98,17 @@ pub async fn write(
         ..Default::default()
     };
     let mut online = BTreeSet::new();
+    for warning in job
+        .logs
+        .iter()
+        .filter(|log| log.message.contains("as browser assets."))
+        .map(|log| log.message.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .take(5)
+    {
+        summary.warnings.push(warning);
+    }
     let mut embedded_videos = 0;
     let mut limited = false;
     let selector = scraper::Selector::parse("a[href]").unwrap();

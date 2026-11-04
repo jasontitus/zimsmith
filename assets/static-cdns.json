@@ -1,5 +1,6 @@
 {
   "hosts": [
+    "cdn.zyrosite.com",
     "fonts.googleapis.com",
     "fonts.gstatic.com",
     "fonts.bunny.net",

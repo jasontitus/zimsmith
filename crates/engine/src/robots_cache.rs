@@ -10,6 +10,8 @@ pub(crate) struct Checkpoint {
     pub delay_ms: u64,
     pub error: Option<String>,
     pub attempts: u8,
+    #[serde(default)]
+    pub passive_fallback: bool,
 }
 
 pub(crate) async fn load(record: &Record, origin: &str) -> Option<Checkpoint> {
