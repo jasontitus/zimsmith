@@ -158,6 +158,23 @@ impl<'a> Network<'a> {
             robots_timeout: Duration::from_secs(15),
         })
     }
+    pub fn declared_sitemaps(&self, url: &Url) -> Vec<String> {
+        self.robots
+            .get(&url.origin().ascii_serialization())
+            .map(|p| {
+                p.text
+                    .lines()
+                    .filter_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.trim()
+                            .eq_ignore_ascii_case("sitemap")
+                            .then(|| value.trim().to_owned())
+                    })
+                    .take(8)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
     pub fn with_cap(mut self, bytes: u64) -> Self {
         self.cap = self.cap.min(bytes);
         self
@@ -453,21 +470,30 @@ impl<'a> Network<'a> {
         Ok(baseline.max(policy.delay))
     }
     pub async fn get(&mut self, url: &Url) -> Result<(Url, String, Vec<u8>)> {
-        self.get_with_purpose(url, false).await
+        self.get_with_purpose(url, false, false).await
     }
     pub async fn get_asset(&mut self, url: &Url) -> Result<(Url, String, Vec<u8>)> {
-        let result = self.get_with_purpose(url, true).await;
+        let result = self.get_with_purpose(url, true, false).await;
         if let Err(error) = &result {
             if let Some(alternative) =
                 public_font_alternative(url).filter(|_| temporary_source_failure(error))
             {
                 self.record.log("warning", "The font proxy is unavailable. Trying the same font families from Google Fonts, with its own robots and rate-limit checks.").await?;
-                return self.get_with_purpose(&alternative, true).await;
+                return self.get_with_purpose(&alternative, true, false).await;
             }
         }
         result
     }
-    async fn get_with_purpose(&mut self, url: &Url, asset: bool) -> Result<(Url, String, Vec<u8>)> {
+    pub async fn get_same_origin(&mut self, url: &Url) -> Result<(Url, String, Vec<u8>)> {
+        self.get_with_purpose(url, false, true).await
+    }
+    async fn get_with_purpose(
+        &mut self,
+        url: &Url,
+        asset: bool,
+        same_origin: bool,
+    ) -> Result<(Url, String, Vec<u8>)> {
+        let origin = url.origin();
         let mut url = url.clone();
         for _ in 0..=8 {
             if asset && !self.record.job.lock().await.config.capture.asset_url(&url) {
@@ -568,6 +594,10 @@ impl<'a> Network<'a> {
                         .to_str()?,
                 )
                 .context("Invalid redirect")?;
+                anyhow::ensure!(
+                    !same_origin || url.origin() == origin,
+                    "Cross-origin sitemap redirect ignored before requesting its destination"
+                );
                 continue;
             }
             anyhow::ensure!(status.is_success(), "HTTP {status}: {url}");
@@ -697,7 +727,8 @@ pub fn visible_text(document: &Html) -> String {
         .collect()
 }
 pub fn inspect(html: &str, base: &Url) -> PageData {
-    let document = Html::parse_document(html);
+    let prepared = crate::images::prepare(html).unwrap_or_else(|_| html.into());
+    let document = Html::parse_document(&prepared);
     let select = |s: &str| Selector::parse(s).unwrap();
     let base = document
         .select(&select("base[href]"))
@@ -777,8 +808,39 @@ pub fn inspect(html: &str, base: &Url) -> PageData {
     }
 }
 
+/// Conservative detection of a known HTTP-200 challenge, not keyword blocking.
+pub fn is_challenge(html: &str) -> bool {
+    let document = Html::parse_document(html);
+    let title = document
+        .select(&Selector::parse("title").unwrap())
+        .next()
+        .map(|e| e.text().collect::<String>().trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    (title == "just a moment..."
+        || title == "just a moment…"
+        || title == "attention required! | cloudflare")
+        && (html.contains("/cdn-cgi/challenge-platform/")
+            || html.contains("_cf_chl_opt")
+            || html.contains("cf-chl-widget"))
+}
+
+#[cfg(test)]
+#[test]
+fn detects_known_verification_pages_without_keyword_false_positives() {
+    assert!(is_challenge(
+        "<title>Just a moment...</title><script src='/cdn-cgi/challenge-platform/start'></script>"
+    ));
+    assert!(!is_challenge(
+        "<title>How CAPTCHA works</title><p>Verification examples.</p>"
+    ));
+    assert!(!is_challenge(
+        "<title>Just a moment...</title><p>A poem.</p>"
+    ));
+}
+
 pub async fn scan(record: &Record) -> Result<()> {
-    let mut network = Network::new(record).await?;
+    let mut network = Network::new(record).await?.with_cap(8 * 1024 * 1024);
+    crate::sitemap::discover(record).await?;
     loop {
         let snapshot = record.job.lock().await.clone();
         let Some(page) = snapshot.queue.first().cloned() else {
@@ -801,7 +863,10 @@ pub async fn scan(record: &Record) -> Result<()> {
                 "pages",
             )
             .await;
-        let result = network.get(&http_url(&page.url)?).await;
+        let result = network.get(&http_url(&page.url)?).await.and_then(|(url, mime, body)| {
+            anyhow::ensure!(!mime.contains("html") || !is_challenge(&String::from_utf8_lossy(&body)), "The site returned a browser verification challenge instead of content. Pause and retry later, or import a saved page.");
+            Ok((url, mime, body))
+        });
         match result {
             Ok((final_url, mime, body)) => {
                 let adopt = page.depth == 0
@@ -849,7 +914,8 @@ pub async fn scan(record: &Record) -> Result<()> {
                 let html = String::from_utf8_lossy(&body).into_owned();
                 let data = inspect(&html, &final_url);
                 let id = key(&entry_url);
-                tokio::fs::write(record.dir.join("cache").join(format!("{id}.html")), html).await?;
+                tokio::fs::write(record.dir.join("cache").join(format!("{id}.html")), &html)
+                    .await?;
                 // Store the effective document URL for correct relative URL resolution.
                 tokio::fs::write(
                     record.dir.join("cache").join(format!("{id}.url")),
@@ -886,7 +952,7 @@ pub async fn scan(record: &Record) -> Result<()> {
                         let selected = j.config.page_allowed(&entry_url);
                         j.entries.push(Entry {
                             id,
-                            url: entry_url,
+                            url: entry_url.clone(),
                             title: data.title,
                             depth: page.depth,
                             selected,
@@ -905,7 +971,9 @@ pub async fn scan(record: &Record) -> Result<()> {
                             media_audio: None,
                             thumbnail_url: None,
                             thumbnail_file: None,
+                            embedded_in: vec![],
                         });
+                        crate::embedded::register(j, &html, &entry_url, page.depth);
                     })
                     .await?;
             }
@@ -937,6 +1005,7 @@ pub async fn scan(record: &Record) -> Result<()> {
                             media_audio: None,
                             thumbnail_url: None,
                             thumbnail_file: None,
+                            embedded_in: vec![],
                         });
                     })
                     .await?;
@@ -1098,7 +1167,7 @@ pub async fn download(record: &Record) -> Result<()> {
             let needed = needed_resources(j);
             j.resources.retain(|url, _| needed.contains(url));
             for e in &mut j.entries {
-                if e.selected {
+                if e.selected && e.embedded_in.is_empty() {
                     e.state = "done".into();
                 }
             }

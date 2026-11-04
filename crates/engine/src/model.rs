@@ -134,6 +134,9 @@ impl NewJob {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Entry {
+    /// Website pages which reference this deduplicated, separately approved video.
+    #[serde(default)]
+    pub embedded_in: Vec<String>,
     pub id: String,
     pub url: String,
     pub title: String,
@@ -215,6 +218,8 @@ pub struct AssetSummary {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Job {
+    #[serde(default)]
+    pub sitemap_checkpoint: crate::sitemap::SitemapState,
     pub id: String,
     pub config: NewJob,
     pub status: String,
@@ -365,6 +370,7 @@ impl Job {
 
     pub fn can_auto_start(&self) -> bool {
         self.refresh.is_none()
+            && self.entries.iter().all(|e| e.embedded_in.is_empty())
             && self.auto_start_item_limit.is_some_and(|limit| {
                 !self.scan_truncated
                     && !self.entries.is_empty()

@@ -132,10 +132,13 @@ pub async fn write(
             if !crate::snapshot::missing_catalogs(&document).is_empty() {
                 summary.warnings.push(format!("Client-rendered store catalog not captured: {}. Product listings require the live site.",entry.title));
             }
-            let videos = crate::snapshot::video_links(&document);
-            embedded_videos += videos.len();
-            for url in videos.values() {
-                online.insert(label(url));
+            let videos = crate::embedded::discover(&document);
+            for id in videos.keys() {
+                let url = format!("https://www.youtube.com/watch?v={id}");
+                if !paths.contains_key(&url) {
+                    embedded_videos += 1;
+                    online.insert(label(&url));
+                }
             }
             for anchor in document.select(&selector) {
                 let Some(url) = anchor

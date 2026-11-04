@@ -88,6 +88,7 @@ pub(crate) fn entry(
         media_audio: None,
         thumbnail_url: Some(format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg")),
         thumbnail_file: None,
+        embedded_in: vec![],
     }
 }
 
@@ -142,6 +143,7 @@ pub async fn scan(record: &Record) -> Result<()> {
                     media_audio: None,
                     thumbnail_url: None,
                     thumbnail_file: None,
+                    embedded_in: vec![],
                 }];
                 j.queue.clear();
                 j.requests += 1;
@@ -306,14 +308,18 @@ pub(crate) async fn original_audio_player(
 
 pub async fn download(record: &Record) -> Result<()> {
     let job = record.job.lock().await.clone();
-    let source = http_url(&job.config.url)?;
-    let rp = youtube(&source).then(|| client(record)).transpose()?;
-    tokio::fs::create_dir_all(record.dir.join("media")).await?;
-    for item in job
+    let rp = job
         .entries
         .iter()
-        .filter(|e| e.selected && e.state != "done")
-    {
+        .any(|e| http_url(&e.url).is_ok_and(|u| youtube(&u)))
+        .then(|| client(record))
+        .transpose()?;
+    tokio::fs::create_dir_all(record.dir.join("media")).await?;
+    for item in job.entries.iter().filter(|e| {
+        crate::embedded::approved(e, &job)
+            && e.state != "done"
+            && (job.config.kind == SourceKind::Media || !e.embedded_in.is_empty())
+    }) {
         let completed = record
             .job
             .lock()
@@ -332,8 +338,11 @@ pub async fn download(record: &Record) -> Result<()> {
             )
             .await;
         let result: Result<(String, Option<String>, u64)> = async {
+            let source = http_url(&item.url)?;
             let mut user_agent = None;
-            let (url, ext, identity, audio, description) = if let Some(rp) = &rp {
+            let (url, ext, identity, audio, description) = if let Some(rp) =
+                rp.as_ref().filter(|_| youtube(&source))
+            {
                 let video = http_url(&item.url)?
                     .query_pairs()
                     .find(|(k, _)| k == "v")
@@ -341,6 +350,17 @@ pub async fn download(record: &Record) -> Result<()> {
                     .context("Missing video ID")?;
                 let player =
                     original_audio_player(record, rp, &source, &video, job.config.delay_ms).await?;
+                if !item.embedded_in.is_empty() {
+                    record
+                        .change(|j| {
+                            let e = j.entries.iter_mut().find(|e| e.id == item.id).unwrap();
+                            if let Some(title) = &player.details.name {
+                                e.title = title.clone();
+                            }
+                            e.duration = Some(player.details.duration as f64);
+                        })
+                        .await?;
+                }
                 user_agent = Some(rp.query().user_agent(player.client_type).into_owned());
                 let selected = crate::youtube_audio::select_with_height(
                     &player,
@@ -503,7 +523,7 @@ pub async fn download(record: &Record) -> Result<()> {
         .await
         .entries
         .iter()
-        .filter(|e| e.selected && e.state != "done")
+        .filter(|e| crate::embedded::approved(e, &job) && e.state != "done")
         .count();
     anyhow::ensure!(
         failed == 0,

@@ -227,6 +227,7 @@ pub async fn scan(record: &Record) -> Result<()> {
                 })
                 .map(str::to_owned),
             thumbnail_file: None,
+            embedded_in: vec![],
         });
     }
     anyhow::ensure!(

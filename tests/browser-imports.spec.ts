@@ -146,6 +146,7 @@ with zipfile.ZipFile(sys.argv[1],'w',compression=zipfile.ZIP_DEFLATED) as z:
     );
     expect(errors).toEqual([]);
   } finally {
+    server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(temp, { recursive: true, force: true });
   }

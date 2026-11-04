@@ -19,8 +19,14 @@ fn image_extension(body: &[u8]) -> Option<&'static str> {
 
 pub async fn prepare(record: &Record) -> Result<()> {
     let job = record.job.lock().await.clone();
-    if job.archive_template != ArchiveTemplate::ScreeningRoom
-        || job.config.kind != SourceKind::Media
+    let website_embeds = job.phase == "download"
+        && job.config.kind == SourceKind::Website
+        && job.config.include_assets
+        && job.config.capture.images
+        && job.entries.iter().any(|e| !e.embedded_in.is_empty());
+    if !website_embeds
+        && (job.archive_template != ArchiveTemplate::ScreeningRoom
+            || job.config.kind != SourceKind::Media)
     {
         return Ok(());
     }
@@ -30,7 +36,7 @@ pub async fn prepare(record: &Record) -> Result<()> {
     let entries: Vec<_> = job
         .entries
         .iter()
-        .filter(|e| e.selected && e.state == "done")
+        .filter(|e| e.selected && e.state == "done" && e.media_file.is_some())
         .collect();
     for (i, entry) in entries.iter().enumerate() {
         if let Some(file) = &entry.thumbnail_file {
@@ -48,13 +54,26 @@ pub async fn prepare(record: &Record) -> Result<()> {
         };
         record
             .progress(
-                format!("Saving gallery artwork: {}", entry.title),
+                format!("Saving video artwork: {}", entry.title),
                 i as u64,
                 Some(entries.len() as u64),
                 "thumbnails",
             )
             .await;
         let result: Result<String> = async {
+            if let Some(resource) = job
+                .resources
+                .get(url)
+                .filter(|r| r.state == "done" && r.size <= 2 * 1024 * 1024)
+            {
+                let source = record.dir.join("cache").join(&resource.path);
+                if let Ok(bytes) = tokio::fs::read(&source).await {
+                    if bytes.len() as u64 == resource.size && image_extension(&bytes).is_some() {
+                        tokio::fs::copy(source, directory.join(&resource.path)).await?;
+                        return Ok(resource.path.clone());
+                    }
+                }
+            }
             let (_, _, body) = network.get_asset(&http_url(url)?).await?;
             let ext = image_extension(&body)
                 .ok_or_else(|| anyhow::anyhow!("Thumbnail is not a supported image"))?;

@@ -1,5 +1,6 @@
 import type { CaptureOptions, Config } from "./types";
 import { captureOptions } from "./capture";
+import { browserOnly } from "./browser/client";
 export function CaptureSettings({
   config,
   onChange,
@@ -38,29 +39,30 @@ export function CaptureSettings({
             refreshing starts a new budget. Leave disk space for the ZIM too.
           </p>
         </div>
-        {config.kind === "media" && !direct && (
-          <div>
-            <label htmlFor="video-quality">Video quality</label>
-            <select
-              id="video-quality"
-              value={c.video_quality}
-              onChange={(e) =>
-                update(
-                  "video_quality",
-                  e.target.value as CaptureOptions["video_quality"],
-                )
-              }
-            >
-              <option value="small">Small · up to 360p</option>
-              <option value="balanced">Balanced · up to 720p</option>
-              <option value="high">High · up to 1080p</option>
-            </select>
-            <p className="settings-note">
-              YouTube uses the best compatible stream within this limit. Direct
-              file URLs keep their original quality.
-            </p>
-          </div>
-        )}
+        {!direct &&
+          (config.kind === "media" || (!browserOnly && c.embedded_videos)) && (
+            <div>
+              <label htmlFor="video-quality">Video quality</label>
+              <select
+                id="video-quality"
+                value={c.video_quality}
+                onChange={(e) =>
+                  update(
+                    "video_quality",
+                    e.target.value as CaptureOptions["video_quality"],
+                  )
+                }
+              >
+                <option value="small">Small · up to 360p</option>
+                <option value="balanced">Balanced · up to 720p</option>
+                <option value="high">High · up to 1080p</option>
+              </select>
+              <p className="settings-note">
+                YouTube uses the best compatible stream within this limit.
+                Direct file URLs keep their original quality.
+              </p>
+            </div>
+          )}
       </div>
       {config.kind === "website" && (
         <>
@@ -96,6 +98,38 @@ export function CaptureSettings({
             apply to pages; excludes apply to pages and assets. The starting
             page is scanned for discovery even if it isn’t included.
           </p>
+          {!browserOnly && (
+            <>
+              <label className="check-label">
+                <input
+                  type="checkbox"
+                  checked={c.embedded_videos}
+                  onChange={(e) => update("embedded_videos", e.target.checked)}
+                />
+                Download embedded YouTube videos
+              </label>
+              <p className="settings-note">
+                Videos appear separately in review. Review is always required
+                when embeds are found; their sizes may be unknown. Uses the
+                video quality, subtitle, file-size, and total-budget settings.
+              </p>
+              <label className="check-label">
+                <input
+                  type="checkbox"
+                  checked={c.discover_sitemaps}
+                  onChange={(e) =>
+                    update("discover_sitemaps", e.target.checked)
+                  }
+                />
+                Discover pages from sitemaps
+              </label>
+              <p className="settings-note">
+                Checks up to 8 same-origin sitemaps, each at most 2 MB. Scope,
+                depth, URL filters, robots rules, and download budgets still
+                apply.
+              </p>
+            </>
+          )}
           <div className="capture-switches">
             {(
               [
@@ -118,43 +152,44 @@ export function CaptureSettings({
           </div>
         </>
       )}
-      {config.kind === "media" && !direct && (
-        <>
-          <h3>Subtitles & transcripts</h3>
-          <label className="check-label">
-            <input
-              type="checkbox"
-              checked={c.subtitles}
-              onChange={(e) => update("subtitles", e.target.checked)}
-            />
-            Save available subtitles and searchable transcripts
-          </label>
-          <div className="form-grid">
-            <div>
-              <label htmlFor="subtitle-language">Subtitle language</label>
-              <input
-                id="subtitle-language"
-                value={c.subtitle_language}
-                maxLength={35}
-                placeholder="original or en"
-                onChange={(e) => update("subtitle_language", e.target.value)}
-              />
-              <p className="settings-note">
-                Use original, or a language code such as en, es, or pt-BR. This
-                does not change the audio language.
-              </p>
-            </div>
+      {!direct &&
+        (config.kind === "media" || (!browserOnly && c.embedded_videos)) && (
+          <>
+            <h3>Subtitles & transcripts</h3>
             <label className="check-label">
               <input
                 type="checkbox"
-                checked={c.auto_captions}
-                onChange={(e) => update("auto_captions", e.target.checked)}
+                checked={c.subtitles}
+                onChange={(e) => update("subtitles", e.target.checked)}
               />
-              Allow auto-generated captions
+              Save available subtitles and searchable transcripts
             </label>
-          </div>
-        </>
-      )}
+            <div className="form-grid">
+              <div>
+                <label htmlFor="subtitle-language">Subtitle language</label>
+                <input
+                  id="subtitle-language"
+                  value={c.subtitle_language}
+                  maxLength={35}
+                  placeholder="original or en"
+                  onChange={(e) => update("subtitle_language", e.target.value)}
+                />
+                <p className="settings-note">
+                  Use original, or a language code such as en, es, or pt-BR.
+                  This does not change the audio language.
+                </p>
+              </div>
+              <label className="check-label">
+                <input
+                  type="checkbox"
+                  checked={c.auto_captions}
+                  onChange={(e) => update("auto_captions", e.target.checked)}
+                />
+                Allow auto-generated captions
+              </label>
+            </div>
+          </>
+        )}
     </section>
   );
 }

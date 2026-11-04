@@ -4,15 +4,15 @@
   "channel": "direct",
   "releases": [
     {
-      "version": "0.2.2",
-      "version_code": 2002,
+      "version": "0.2.3",
+      "version_code": 2003,
       "abi": "arm64-v8a",
       "min_sdk": 24,
-      "url": "https://github.com/jasontitus/zimsmith/releases/download/v0.2.2/Zimsmith-0.2.2-arm64-v8a-96c8e51602e0.apk",
-      "sha256": "96c8e51602e0a03abb64def2351c7c33da31cecfc455ae598b312de0d3c76a31",
+      "url": "https://github.com/jasontitus/zimsmith/releases/download/v0.2.3/Zimsmith-0.2.3-arm64-v8a-88d65630a191.apk",
+      "sha256": "88d65630a191d2a347649a9356c3d0df51c6622499a4f2d9207727597b48a325",
       "certificate_sha256": "f05a21df94164c0695b4e422bb413e2b7e5971ef44ecab3e2666faacb287aa89",
-      "size_bytes": 39987853,
-      "notes": "Fix blank server-rendered pages caused by script-dependent reveal animations, provide working offline mobile menus, and correctly rewrite HTML-escaped asset URLs.\n\nPreserve embedded SVG data URLs and fragment references, repair legacy cached stylesheet dependencies, and recover recognized public font proxies through Google Fonts with robots/rate limits intact.\n\nRemove script code from search excerpts. Clearly label online-only YouTube embeds and uncaptured JavaScript store catalogs. Rebuild saved content to apply static-page repairs; client-rendered catalogs still require the live site."
+      "size_bytes": 40245901,
+      "notes": "Download embedded YouTube videos with website crawls: deduplicated review items, original audio, captions, resumable downloads, and inline offline players. Embedded-video scans always require review.\n\nAdd optional bounded sitemap discovery, improve lazy/responsive image capture and HTML base URL handling, and reject known HTTP-200 verification challenges. Build with available files keeps saved pages when embedded videos are unfinished.\n\nWebsite YouTube extraction and sitemap discovery run locally in installed apps. JavaScript-only catalogs still require the live site."
     }
   ]
 }

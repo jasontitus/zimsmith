@@ -22,6 +22,8 @@ impl VideoQuality {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct CaptureOptions {
+    pub embedded_videos: bool,
+    pub discover_sitemaps: bool,
     pub include_urls: Vec<String>,
     pub seed_urls: Vec<String>,
     pub exclude_urls: Vec<String>,
@@ -39,6 +41,8 @@ pub struct CaptureOptions {
 impl Default for CaptureOptions {
     fn default() -> Self {
         Self {
+            embedded_videos: true,
+            discover_sitemaps: false,
             include_urls: vec![],
             seed_urls: vec![],
             exclude_urls: vec![],

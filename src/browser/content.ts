@@ -1,8 +1,6 @@
-import { linkedAsset } from "../capture";
-import { staticPresentation } from "./snapshot";
+export { parse, clean, discover, rewritePage } from "./pages";
+import { parse } from "./pages";
 export { rewriteCss } from "./css";
-import { rewriteCss } from "./css";
-import { DOMParser } from "linkedom/worker";
 import templateData from "./templates.json";
 import css from "../../crates/engine/assets/archive.css?raw";
 import search from "../../crates/engine/assets/search.js?raw";
@@ -12,146 +10,11 @@ import sans from "../../crates/engine/assets/fonts/dm-sans.woff2?url";
 import display from "../../crates/engine/assets/fonts/manrope.woff2?url";
 import icon from "../../crates/engine/assets/zimsmith-icon-48.png?url";
 import license from "../../crates/engine/assets/fonts/LICENSE.txt?raw";
-import {
-  escape,
-  resolveUrl,
-  type BrowserJob,
-  type BrowserEntry,
-} from "./model";
+import { escape, type BrowserJob, type BrowserEntry } from "./model";
 import type { ArchiveTemplate } from "../types";
 import type { ZimItem } from "./zim";
 
 export const templates = templateData.catalog;
-export const parse = (html: string) =>
-  new DOMParser().parseFromString(html, "text/html") as unknown as Document;
-export function clean(document: Document) {
-  document
-    .querySelectorAll(
-      "script,iframe,frame,frameset,object,embed,base,form,meta[http-equiv],link:not([rel~='stylesheet'])",
-    )
-    .forEach((e) => e.remove());
-  for (const element of document.querySelectorAll("*"))
-    for (const attribute of Array.from(element.attributes))
-      if (
-        /^on/i.test(attribute.name) ||
-        [
-          "srcdoc",
-          "ping",
-          "integrity",
-          "nonce",
-          "crossorigin",
-          "autoplay",
-        ].includes(attribute.name)
-      )
-        element.removeAttribute(attribute.name);
-}
-export function discover(html: string, source: string) {
-  const document = parse(html);
-  staticPresentation(document);
-  clean(document);
-  const links = Array.from(document.querySelectorAll("a[href]"), (a) =>
-    resolveUrl(a.getAttribute("href")!, source),
-  ).filter((s): s is string => !!s);
-  return {
-    title: (
-      document.querySelector("title")?.textContent ||
-      new URL(source).pathname ||
-      source
-    )
-      .trim()
-      .slice(0, 500),
-    text: (document.body?.textContent || "")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 50000),
-    links,
-    embedded_videos: document.querySelectorAll(".zim-online-video").length,
-    missing_catalogs: document.querySelectorAll(".zim-missing-content").length,
-  };
-}
-
-export async function rewritePage(
-  html: string,
-  entry: BrowserEntry,
-  job: BrowserJob,
-  asset: (url: string) => Promise<string>,
-) {
-  const document = parse(html);
-  staticPresentation(document);
-  clean(document);
-  const selected = new Map(
-    job.entries.filter((e) => e.selected).map((e) => [e.url, `${e.id}.html`]),
-  );
-  for (const a of document.querySelectorAll("a[href]")) {
-    const original = a.getAttribute("href")!;
-    if (original.startsWith("#")) continue;
-    const url = resolveUrl(original, entry.url);
-    if (url) {
-      const hash = new URL(original, entry.url).hash;
-      const saved =
-        job.config.include_assets && linkedAsset(url) ? await asset(url) : "";
-      a.setAttribute("href", (selected.get(url) || saved || url) + hash);
-      a.setAttribute("rel", "noopener noreferrer");
-    } else a.removeAttribute("href");
-  }
-  const load = async (value: string) => {
-    const url = resolveUrl(value, entry.url);
-    return url && job.config.include_assets ? asset(url) : "";
-  };
-  for (const element of document.querySelectorAll(
-    "[src], [poster], link[rel~='stylesheet']",
-  )) {
-    const attribute = element.matches("link")
-      ? "href"
-      : element.hasAttribute("src")
-        ? "src"
-        : "poster";
-    const value = element.getAttribute(attribute);
-    if (!value) continue;
-    if (value.startsWith("data:") && element.matches("img")) continue;
-    const saved = await load(value);
-    if (saved) element.setAttribute(attribute, saved);
-    else element.removeAttribute(attribute);
-  }
-  for (const element of document.querySelectorAll("[srcset]"))
-    element.removeAttribute("srcset");
-  for (const element of document.querySelectorAll("style,[style]")) {
-    const value =
-      element.tagName.toLowerCase() === "style"
-        ? element.textContent || ""
-        : element.getAttribute("style") || "";
-    const rewritten = await rewriteCss(
-      value,
-      entry.url,
-      load,
-      element.tagName.toLowerCase() === "style"
-        ? "stylesheet"
-        : "declarationList",
-    );
-    if (element.tagName.toLowerCase() === "style")
-      element.textContent = rewritten;
-    else element.setAttribute("style", rewritten);
-  }
-  const meta = document.createElement("meta");
-  meta.setAttribute("http-equiv", "Content-Security-Policy");
-  meta.setAttribute(
-    "content",
-    "default-src 'none'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; media-src 'self'; base-uri 'none'; form-action 'none'",
-  );
-  document.head.prepend(meta);
-  const style = document.createElement("link");
-  style.setAttribute("rel", "stylesheet");
-  style.setAttribute("href", "studio.css");
-  document.head.append(style);
-  const nav = document.createElement("nav");
-  nav.className = "zim-archive-nav";
-  nav.setAttribute("data-zim-template", job.archive_template);
-  nav.innerHTML = job.import
-    ? `<a href="index.html">← Collection contents</a><span>Imported saved content</span>`
-    : `<a href="index.html">← Collection contents</a><span>Saved for offline reading</span><a href="${escape(entry.url)}" rel="noopener noreferrer">Original source ↗</a>`;
-  document.body.prepend(nav);
-  return "<!doctype html>" + document.documentElement.outerHTML;
-}
 interface CatalogDocument {
   title: string;
   url: string;

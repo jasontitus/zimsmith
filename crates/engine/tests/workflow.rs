@@ -27,6 +27,205 @@ fn config(url: String) -> NewJob {
         capture: Default::default(),
     }
 }
+
+#[tokio::test]
+async fn sitemap_lazy_images_and_embedded_video_review_work_together() {
+    let images = Arc::new(AtomicUsize::new(0));
+    let sitemap_hits = Arc::new(AtomicUsize::new(0));
+    let maps = sitemap_hits.clone();
+    let app = Router::new()
+        .route("/robots.txt", get(|| async { "User-agent: *\nDisallow: /private\nSitemap: /catalog.xml\n" }))
+        .route("/", get(|| async { Html(r#"<title>Home</title><iframe title="Talk" src="https://www.youtube-nocookie.com/embed/abcdefghijk"></iframe><iframe src="https://www.youtube.com/embed/abcdefghijk"></iframe><img src="data:image/gif;base64,AA" data-original="/photo.svg">"#) }))
+        .route("/sitemap.xml", get(move || { let maps=maps.clone(); async move { maps.fetch_add(1,Ordering::SeqCst); ([("Content-Type","application/xml")], "<sitemapindex><sitemap><loc>/catalog.xml</loc></sitemap><sitemap><loc>https://outside.test/sitemap.xml</loc></sitemap><sitemap><loc>/jump.xml</loc></sitemap></sitemapindex>") } }))
+        .route("/jump.xml", get(|| async { axum::response::Redirect::temporary("https://outside.test/redirected-map.xml") }))
+        .route("/catalog.xml", get(|| async { ([("Content-Type","application/xml")], "<urlset><url><loc>/orphan</loc></url><url><loc>/private</loc></url><url><loc>https://outside.test/page</loc></url></urlset>") }))
+        .route("/orphan", get(|| async { Html("<title>Unlinked page</title><p>Discovered only through the sitemap.</p>") }))
+        .route("/private", get(|| async { "should never fetch" }))
+        .route("/photo.svg", get(|State(images): State<Arc<AtomicUsize>>| async move { images.fetch_add(1,Ordering::SeqCst); ([("Content-Type","image/svg+xml")],"<svg xmlns='http://www.w3.org/2000/svg'/>") }))
+        .with_state(images.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let temp = tempfile::tempdir().unwrap();
+    let engine = Engine::open(temp.path()).await.unwrap();
+    let mut cfg = config(url.clone());
+    cfg.max_items = 10;
+    cfg.capture.discover_sitemaps = true;
+    let job = engine.create(cfg).await.unwrap();
+    let review = wait(&engine, &job.id, "review").await;
+    assert_eq!(
+        images.load(Ordering::SeqCst),
+        0,
+        "no image payload before approval"
+    );
+    assert_eq!(sitemap_hits.load(Ordering::SeqCst), 1);
+    assert!(review.logs.iter().any(|l| l
+        .message
+        .contains("Cross-origin sitemap redirect ignored before requesting")));
+    assert!(review.entries.iter().any(|e| e.title == "Unlinked page"));
+    let video = review
+        .entries
+        .iter()
+        .filter(|e| !e.embedded_in.is_empty())
+        .collect::<Vec<_>>();
+    assert_eq!(video.len(), 1, "duplicate embeds share one download");
+    assert_eq!(video[0].embedded_in, [url.clone()]);
+    assert_eq!(video[0].size, None);
+    assert!(
+        !review.can_auto_start(),
+        "unknown-size embedded videos require review"
+    );
+    assert!(review
+        .entries
+        .iter()
+        .any(|e| e.url.ends_with("/private") && e.state == "scan_failed"));
+    let selected = review
+        .entries
+        .iter()
+        .filter(|e| e.state != "scan_failed" && e.embedded_in.is_empty())
+        .map(|e| e.id.clone())
+        .collect();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    engine.build(&job.id, selected).await.unwrap();
+    wait(&engine, &job.id, "completed").await;
+    assert_eq!(images.load(Ordering::SeqCst), 1);
+    let archive = zimru::Archive::open(engine.artifact(&job.id).await.unwrap()).unwrap();
+    let home = review.entries.iter().find(|e| e.url == url).unwrap();
+    let html = archive.get_text(&format!("{}.html", home.id)).unwrap();
+    assert!(html.contains("Watch video online"));
+    assert!(!html.contains("<iframe"));
+    assert!(html.contains(".svg"));
+    assert!(!html.contains("src=\"data:image/gif"));
+    server.abort();
+}
+
+#[tokio::test]
+async fn cached_embedded_video_is_packaged_inline_with_subtitles_and_no_network() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut fixture = saved_attempt(temp.path(), "embedded-fixture", "completed").await;
+    fixture.resources.clear();
+    fixture.phase = "package".into();
+    fixture.entries[0].state = "done".into();
+    fixture.entries[0].assets.clear();
+    let mut video = fixture.entries[0].clone();
+    video.id = "embedded-video".into();
+    video.url = "https://www.youtube.com/watch?v=abcdefghijk".into();
+    video.title = "Offline talk".into();
+    video.embedded_in = vec![fixture.config.url.clone()];
+    video.media_file = Some("movie.mp4".into());
+    video.media_audio = Some("audio.m4a".into());
+    video.thumbnail_url = None;
+    video.subtitles = vec![zim_engine::captions::SavedSubtitle {
+        file: "captions.vtt".into(),
+        language: "en".into(),
+        label: "English".into(),
+        auto_generated: false,
+    }];
+    fixture.entries.push(video);
+    let dir = temp.path().join("embedded-fixture");
+    tokio::fs::create_dir_all(dir.join("media")).await.unwrap();
+    tokio::fs::write(
+        dir.join("media/movie.mp4"),
+        include_bytes!("fixtures/sync-bframes-video.mp4"),
+    )
+    .await
+    .unwrap();
+    tokio::fs::write(
+        dir.join("media/audio.m4a"),
+        include_bytes!("fixtures/sync-audio.m4a"),
+    )
+    .await
+    .unwrap();
+    tokio::fs::write(
+        dir.join("media/captions.vtt"),
+        "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nSaved words\n",
+    )
+    .await
+    .unwrap();
+    tokio::fs::write(dir.join("cache/home.html"),r#"<title>Home</title><iframe src="https://www.youtube.com/embed/abcdefghijk"></iframe><div class="video" id="card"><img src="https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg"><button class="video__play--youtube"></button></div>"#).await.unwrap();
+    tokio::fs::write(dir.join("job.json"), serde_json::to_vec(&fixture).unwrap())
+        .await
+        .unwrap();
+    let engine = Engine::open(temp.path()).await.unwrap();
+    engine
+        .rebuild("embedded-fixture", ArchiveTemplate::Atlas)
+        .await
+        .unwrap();
+    let done = wait(&engine, "embedded-fixture", "completed").await;
+    assert_eq!(done.requests, fixture.requests);
+    let archive = zimru::Archive::open(engine.artifact("embedded-fixture").await.unwrap()).unwrap();
+    let page = archive.get_text("home.html").unwrap();
+    assert_eq!(page.matches("<video ").count(), 2);
+    assert!(page.contains("src=\"embedded-video-combined.mp4\""));
+    assert!(page.contains("src=\"captions.vtt\""));
+    assert!(!page.contains("<iframe") && !page.contains("Watch video online"));
+    assert!(archive
+        .get_entry_by_path("embedded-video-combined.mp4")
+        .is_ok());
+    assert!(archive
+        .get_text("captions.vtt")
+        .unwrap()
+        .contains("Saved words"));
+    assert!(!done
+        .capture_report
+        .unwrap()
+        .warnings
+        .iter()
+        .any(|s| s.contains("movies were not downloaded")));
+    if let Some(destination) = std::env::var_os("ZIMSTUDIO_EMBED_OUTPUT_DIR") {
+        tokio::fs::create_dir_all(&destination).await.unwrap();
+        let mut files = tokio::fs::read_dir(dir.join("content")).await.unwrap();
+        while let Some(file) = files.next_entry().await.unwrap() {
+            tokio::fs::copy(
+                file.path(),
+                std::path::Path::new(&destination).join(file.file_name()),
+            )
+            .await
+            .unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+async fn available_files_recovery_omits_an_unfinished_embed_and_keeps_the_page() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut fixture = saved_attempt(temp.path(), "partial-embed", "failed").await;
+    fixture.resources.clear();
+    fixture.entries[0].assets.clear();
+    let mut video = fixture.entries[0].clone();
+    video.id = "unfinished-video".into();
+    video.url = "https://www.youtube.com/watch?v=abcdefghijk".into();
+    video.embedded_in = vec![fixture.config.url.clone()];
+    video.state = "failed".into();
+    fixture.entries.push(video);
+    let dir = temp.path().join("partial-embed");
+    tokio::fs::write(dir.join("cache/home.html"),r#"<title>Home</title><p>Saved article</p><iframe src="https://www.youtube.com/embed/abcdefghijk"></iframe>"#).await.unwrap();
+    tokio::fs::write(dir.join("job.json"), serde_json::to_vec(&fixture).unwrap())
+        .await
+        .unwrap();
+    let engine = Engine::open(temp.path()).await.unwrap();
+    engine.build_available(&fixture.id).await.unwrap();
+    let done = wait(&engine, &fixture.id, "completed").await;
+    assert_eq!(done.requests, fixture.requests);
+    assert!(!done.entries[1].selected);
+    let archive = zimru::Archive::open(engine.artifact(&fixture.id).await.unwrap()).unwrap();
+    assert!(archive
+        .get_text("home.html")
+        .unwrap()
+        .contains("Saved article"));
+    assert!(archive
+        .get_text("home.html")
+        .unwrap()
+        .contains("Video not saved"));
+    assert!(done
+        .capture_report
+        .unwrap()
+        .warnings
+        .iter()
+        .any(|s| s.contains("movies were not downloaded")));
+}
 async fn wait(engine: &Engine, id: &str, status: &str) -> Job {
     tokio::time::timeout(std::time::Duration::from_secs(45), async {
         loop {

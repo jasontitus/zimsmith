@@ -58,14 +58,16 @@ pub async fn compare(record: &Record) -> Result<()> {
             "unavailable"
         } else if let Some(previous) = previous {
             entry.selected = previous.selected;
-            let changed = if snapshot.config.kind == SourceKind::Website {
+            let changed = if snapshot.config.kind == SourceKind::Website
+                && entry.embedded_in.is_empty()
+            {
                 let hash = fingerprint(record.dir.join("cache").join(format!("{}.html", entry.id)))
                     .await?;
                 refresh.fingerprints.get(&entry.id) != Some(&hash)
             } else {
                 entry.title != previous.title || entry.duration != previous.duration
             };
-            if snapshot.config.kind == SourceKind::Media
+            if (snapshot.config.kind == SourceKind::Media || !entry.embedded_in.is_empty())
                 && previous.state == "done"
                 && snapshot.config.capture.video_quality == refresh.previous_quality
                 && web::http_url(&entry.url).is_ok_and(|url| crate::native_media::youtube(&url))
@@ -146,6 +148,7 @@ impl crate::Engine {
             "Finish the current archive before refreshing"
         );
         let mut next = current.clone();
+        next.sitemap_checkpoint = Default::default();
         let mut refresh = RefreshState {
             previous: next.entries.clone(),
             previous_quality: next.config.capture.video_quality,

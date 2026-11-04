@@ -1,4 +1,33 @@
 export function staticPresentation(document: Document) {
+  for (const frame of document.querySelectorAll("iframe,embed,object")) {
+    const value =
+      frame.getAttribute("src") ||
+      frame.getAttribute("data-src") ||
+      frame.getAttribute("data");
+    if (!value || !/^(https?:)?\/\//i.test(value)) continue;
+    try {
+      const url = new URL(value, "https://www.youtube.com/"),
+        match = url.pathname.match(/^\/embed\/([\w-]{11})$/);
+      if (
+        ![
+          "youtube.com",
+          "www.youtube.com",
+          "m.youtube.com",
+          "youtube-nocookie.com",
+          "www.youtube-nocookie.com",
+        ].includes(url.hostname) ||
+        !match
+      )
+        continue;
+      const link = document.createElement("a");
+      link.className = "zim-online-video";
+      link.href = `https://www.youtube.com/watch?v=${match[1]}`;
+      link.textContent = "Watch video online ↗ · Video not saved";
+      frame.replaceWith(link);
+    } catch {
+      /* Unknown frames are removed by the capture sanitizer. */
+    }
+  }
   for (const list of document.querySelectorAll(".block-product-list")) {
     if (list.textContent?.trim() || list.querySelector("a[href]")) continue;
     const note = document.createElement("aside");

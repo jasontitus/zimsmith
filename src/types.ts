@@ -13,6 +13,8 @@ export interface Settings {
   zstd_level: number;
 }
 export interface CaptureOptions {
+  embedded_videos: boolean;
+  discover_sitemaps: boolean;
   include_urls: string[];
   seed_urls: string[];
   exclude_urls: string[];
@@ -42,6 +44,7 @@ export interface Config {
   include_assets: boolean;
 }
 export interface Entry {
+  embedded_in?: string[];
   id: string;
   url: string;
   title: string;

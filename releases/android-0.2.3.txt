@@ -1,0 +1,5 @@
+Download embedded YouTube videos with website crawls: deduplicated review items, original audio, captions, resumable downloads, and inline offline players. Embedded-video scans always require review.
+
+Add optional bounded sitemap discovery, improve lazy/responsive image capture and HTML base URL handling, and reject known HTTP-200 verification challenges. Build with available files keeps saved pages when embedded videos are unfinished.
+
+Website YouTube extraction and sitemap discovery run locally in installed apps. JavaScript-only catalogs still require the live site.

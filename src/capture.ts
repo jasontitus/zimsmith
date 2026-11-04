@@ -1,6 +1,8 @@
 import type { CaptureOptions, Config } from "./types";
 
 export const captureDefaults: CaptureOptions = {
+  embedded_videos: true,
+  discover_sitemaps: false,
   include_urls: [],
   seed_urls: [],
   exclude_urls: [],

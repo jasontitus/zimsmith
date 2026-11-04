@@ -6789,6 +6789,7 @@ dependencies = [
  "mime_guess",
  "mp4-track",
  "png 0.17.16",
+ "quick-xml",
  "regex",
  "reqwest 0.12.28",
  "robotstxt",
@@ -6809,7 +6810,7 @@ dependencies = [
 
 [[package]]
 name = "zim-studio"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "atomic-write-file",
  "axum",

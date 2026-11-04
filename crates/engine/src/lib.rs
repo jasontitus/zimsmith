@@ -3,6 +3,8 @@ pub mod captions;
 pub mod capture;
 pub mod capture_report;
 mod css;
+mod embedded;
+mod images;
 pub mod imports;
 mod media;
 pub mod model;
@@ -10,6 +12,7 @@ mod mux;
 mod native_media;
 pub mod refresh;
 mod robots_cache;
+mod sitemap;
 mod snapshot;
 pub mod templates;
 mod thumbnails;
@@ -197,6 +200,7 @@ impl Engine {
         let settings = self.settings().await;
         let id = uuid::Uuid::new_v4().to_string();
         let mut job = Job {
+            sitemap_checkpoint: Default::default(),
             id: id.clone(),
             queue: config.starting_pages(),
             config,
@@ -372,17 +376,24 @@ impl Engine {
                 || config.include_assets != current.config.include_assets
                 || config.capture.seed_urls != current.config.capture.seed_urls
                 || config.capture.include_urls != current.config.capture.include_urls
-                || config.capture.exclude_urls != current.config.capture.exclude_urls;
+                || config.capture.exclude_urls != current.config.capture.exclude_urls
+                || config.capture.embedded_videos != current.config.capture.embedded_videos
+                || config.capture.discover_sitemaps != current.config.capture.discover_sitemaps
+                || config.capture.media != current.config.capture.media;
             let mut job = current.clone();
             if config.capture.video_quality != current.config.capture.video_quality
-                && config.kind == SourceKind::Media
+                && (config.kind == SourceKind::Media
+                    || job.entries.iter().any(|e| !e.embedded_in.is_empty()))
             {
-                for entry in job.entries.iter_mut().filter(|e| e.selected) {
+                for entry in job.entries.iter_mut().filter(|e| {
+                    e.selected && (config.kind == SourceKind::Media || !e.embedded_in.is_empty())
+                }) {
                     entry.state = "pending".into();
                 }
                 job.phase = "download".into();
             }
-            if config.kind == SourceKind::Media
+            if (config.kind == SourceKind::Media
+                || job.entries.iter().any(|e| !e.embedded_in.is_empty()))
                 && (config.capture.subtitles != current.config.capture.subtitles
                     || config.capture.subtitle_language != current.config.capture.subtitle_language
                     || config.capture.auto_captions != current.config.capture.auto_captions)
@@ -405,6 +416,7 @@ impl Engine {
             )
             .await?;
             if rescan {
+                job.sitemap_checkpoint = Default::default();
                 for file in ["media-cursor.json", "youtube-playlist-page.json"] {
                     match tokio::fs::remove_file(record.dir.join(file)).await {
                         Ok(()) => (),
@@ -519,7 +531,7 @@ impl Engine {
             !selected.is_empty() && selected.iter().all(|e| e.state != "scan_failed"),
             "All selected pages must have finished scanning"
         );
-        for entry in selected {
+        for entry in selected.into_iter().filter(|e| e.embedded_in.is_empty()) {
             anyhow::ensure!(
                 tokio::fs::metadata(record.dir.join("cache").join(format!("{}.html", entry.id)))
                     .await
@@ -542,9 +554,26 @@ impl Engine {
             }
         }
         for entry in next.entries.iter_mut().filter(|e| e.selected) {
+            if !entry.embedded_in.is_empty() {
+                let mut available = entry.state == "done" && entry.media_file.is_some();
+                for file in entry.media_file.iter().chain(entry.media_audio.iter()) {
+                    available &= tokio::fs::metadata(record.dir.join("media").join(file))
+                        .await
+                        .is_ok_and(|m| m.is_file());
+                }
+                if !available {
+                    entry.selected = false;
+                    entry.error = Some("Video omitted when building with available files".into());
+                    continue;
+                }
+            }
             entry.state = "done".into();
             entry.error = None;
         }
+        anyhow::ensure!(
+            next.entries.iter().any(|e| e.selected),
+            "No saved items are available. Resume downloading first."
+        );
         if next.output.is_some() {
             next.archive_revision = next
                 .archive_revision
@@ -720,7 +749,20 @@ async fn drive(record: &Record) -> Result<()> {
     if phase != "scan" {
         if phase == "download" {
             match job.config.kind {
-                SourceKind::Website => web::download(record).await?,
+                SourceKind::Website => {
+                    web::download(record).await?;
+                    if record
+                        .job
+                        .lock()
+                        .await
+                        .entries
+                        .iter()
+                        .any(|e| !e.embedded_in.is_empty() && e.selected)
+                    {
+                        native_media::download(record).await?;
+                        thumbnails::prepare(record).await?;
+                    }
+                }
                 SourceKind::Media => media::download(record).await?,
             }
             record

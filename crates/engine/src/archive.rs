@@ -33,16 +33,38 @@ pub async fn package(record: &Record) -> Result<()> {
         tokio::fs::remove_dir_all(&content).await?;
     }
     tokio::fs::create_dir_all(&content).await?;
-    let selected: Vec<_> = job
+    let mut selected: Vec<_> = job
         .entries
         .iter()
-        .filter(|e| e.selected && e.state == "done")
+        .filter(|e| crate::embedded::approved(e, &job) && e.state == "done")
         .collect();
+    selected.sort_by_key(|e| e.media_file.is_none());
     anyhow::ensure!(!selected.is_empty(), "No completed entries to package");
     let mut paths: BTreeMap<String, String> = selected
         .iter()
         .map(|e| (e.url.clone(), format!("{}.html", e.id)))
         .collect();
+    // Generated inline players use these known local files, without resolving
+    // them against the original website's URL.
+    for entry in &selected {
+        if let Some(file) = &entry.media_file {
+            let file = if entry.media_audio.is_some() {
+                format!("{}-combined.mp4", entry.id)
+            } else {
+                file.clone()
+            };
+            paths.insert(format!("urn:zimsmith:{file}"), file);
+        }
+        for file in entry.thumbnail_file.iter().chain(
+            entry
+                .subtitles
+                .iter()
+                .filter(|_| job.config.capture.subtitles)
+                .map(|t| &t.file),
+        ) {
+            paths.insert(format!("urn:zimsmith:{file}"), file.clone());
+        }
+    }
     let mut needed = BTreeSet::new();
     let mut todo: Vec<_> = selected.iter().flat_map(|e| e.assets.clone()).collect();
     if job.config.include_assets {
@@ -88,6 +110,7 @@ pub async fn package(record: &Record) -> Result<()> {
     let mut catalog = templates::SearchCatalog::default();
     catalog.omitted_assets = omitted_count;
     catalog.capture_report = true;
+    let embedded_players = crate::embedded::bindings(&job);
     for (index, entry) in selected.iter().enumerate() {
         record
             .progress(
@@ -136,7 +159,12 @@ pub async fn package(record: &Record) -> Result<()> {
                 )
                 .await
                 .unwrap_or_else(|_| entry.url.clone());
-                rewrite_page(&html, &http_url(&effective)?, &paths, job.archive_template)?
+                rewrite_page(
+                    &crate::embedded::rewrite(&html, &embedded_players)?,
+                    &http_url(&effective)?,
+                    &paths,
+                    job.archive_template,
+                )?
             }
             SourceKind::Media => {
                 let file = entry
@@ -415,6 +443,8 @@ fn rewrite_page(
     paths: &BTreeMap<String, String>,
     template: ArchiveTemplate,
 ) -> Result<String> {
+    let html = crate::images::prepare(html)?;
+    let html = html.as_str();
     let parsed = scraper::Html::parse_document(html);
     let base_selector = scraper::Selector::parse("base[href]").unwrap();
     let base = parsed
@@ -422,6 +452,7 @@ fn rewrite_page(
         .next()
         .and_then(|e| resolve(source, e.value().attr("href")?))
         .unwrap_or_else(|| source.clone());
+    let local_paths: BTreeSet<_> = paths.values().cloned().collect();
     let style_paths = paths.clone();
     let style_base = base.clone();
     let prepared = crate::snapshot::prepare(html, &parsed)?;
@@ -440,12 +471,17 @@ fn rewrite_page(
                 let fallback = el.get_attribute("data-src").or_else(|| el.get_attribute("srcset").and_then(|s| s.split(',').next().and_then(|s| s.split_whitespace().next()).map(str::to_string)));
                 if let Some(src) = fallback { el.set_attribute("src", &src)?; }
             }
+            if el.tag_name() == "img" && !el.get_attribute("src").and_then(|s| resolve(&base, &decode_attribute(&s))).is_some_and(|u| paths.contains_key(u.as_str())) {
+                if let Some(original) = el.get_attribute("data-zim-original-src").filter(|s| resolve(&base, &decode_attribute(s)).is_some_and(|u| paths.contains_key(u.as_str()))) { el.set_attribute("src", &original)?; }
+            }
+            el.remove_attribute("data-zim-original-src");
             let attrs: Vec<_> = el.attributes().iter().map(|a| a.name()).collect();
             for attr in attrs { if attr.starts_with("on") || ["srcset", "integrity", "crossorigin", "nonce", "action", "formaction", "ping"].contains(&attr.as_str()) { el.remove_attribute(&attr); } }
             for attr in ["href", "src", "poster"] {
                 let Some(value) = el.get_attribute(attr) else { continue; };
                 let value = decode_attribute(&value);
                 if value.starts_with('#') || (value.starts_with("data:image/") && attr != "href") { continue; }
+                if local_paths.contains(&value) { continue; }
                 let resolved = resolve(&base, &value);
                 if let Some(path) = resolved.as_ref().and_then(|u| paths.get(u.as_str())) {
                     let fragment = base.join(&value).ok().and_then(|u| u.fragment().map(str::to_string)).map(|s| format!("#{s}")).unwrap_or_default();

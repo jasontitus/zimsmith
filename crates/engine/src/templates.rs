@@ -470,7 +470,7 @@ pub fn preview(template: ArchiveTemplate) -> anyhow::Result<String> {
         ("Small ideas, lasting change", "Good questions lead to unexpected places. A collection of practical ideas for a more thoughtful world."),
         ("Notes from elsewhere", "Stories from people and places that remind us how much there is still to discover.")
     ].into_iter().enumerate() {
-        let entry = Entry { id: format!("sample-{i}"), url: config.url.clone(), title: title.into(), text: text.into(), depth: 0, selected: true, state: "done".into(), size: None, duration: None, error: None, assets: vec![], media_file: None, subtitles: vec![], transcript: vec![], transcript_file: None, subtitle_policy: None, subtitle_error: None, media_audio: None, thumbnail_url: None, thumbnail_file: None };
+        let entry = Entry { id: format!("sample-{i}"), url: config.url.clone(), title: title.into(), text: text.into(), depth: 0, selected: true, state: "done".into(), size: None, duration: None, error: None, assets: vec![], media_file: None, subtitles: vec![], transcript: vec![], transcript_file: None, subtitle_policy: None, subtitle_error: None, media_audio: None, thumbnail_url: None, thumbnail_file: None, embedded_in: vec![] };
         let mut entry = entry;
         if template == ArchiveTemplate::ScreeningRoom {
             entry.duration = Some([752., 1184., 401., 946.][i]);
@@ -561,6 +561,7 @@ mod tests {
             media_audio: None,
             thumbnail_url: None,
             thumbnail_file: None,
+            embedded_in: vec![],
         };
         assert!(render_media(ArchiveTemplate::Midnight, &config, &entry)
             .contains("<audio class='standalone-audio'"));

@@ -1646,7 +1646,11 @@ export default function App() {
                         <th className="checkbox-cell" />
                         <th>ITEM</th>
                         <th>
-                          {job.config.kind === "media" ? "DURATION" : "DEPTH"}
+                          {job.config.kind === "media"
+                            ? "DURATION"
+                            : job.entries.some((e) => e.embedded_in?.length)
+                              ? "DEPTH / DURATION"
+                              : "DEPTH"}
                         </th>
                         <th>KNOWN SIZE</th>
                         <th>STATUS</th>
@@ -2280,6 +2284,7 @@ function EntryRow({
   editable: boolean;
   media: boolean;
 }) {
+  media ||= !!entry.embedded_in?.length;
   return (
     <tr>
       <td className="checkbox-cell">
@@ -2297,6 +2302,12 @@ function EntryRow({
           <span>
             <strong>{entry.title}</strong>
             <small title={entry.url}>{entry.url}</small>
+            {!!entry.embedded_in?.length && (
+              <small>
+                Embedded video · referenced by {entry.embedded_in.length}{" "}
+                page(s)
+              </small>
+            )}
             {entry.error && (
               <small className="entry-error">{entry.error}</small>
             )}

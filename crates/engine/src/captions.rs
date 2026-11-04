@@ -283,11 +283,12 @@ pub(crate) async fn prepare(record: &Record, rp: &RustyPipe) -> Result<()> {
         "{}:{}",
         job.config.capture.subtitle_language, job.config.capture.auto_captions
     );
-    for entry in job
-        .entries
-        .iter()
-        .filter(|e| e.selected && e.state == "done")
-    {
+    for entry in job.entries.iter().filter(|e| {
+        crate::embedded::approved(e, &job)
+            && e.state == "done"
+            && e.media_file.is_some()
+            && crate::web::http_url(&e.url).is_ok_and(|u| crate::native_media::youtube(&u))
+    }) {
         if entry.subtitle_policy.as_deref() == Some(&policy) && !entry.subtitles.is_empty() {
             let mut valid = true;
             for track in &entry.subtitles {
