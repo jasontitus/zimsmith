@@ -273,28 +273,28 @@ pub(crate) async fn original_audio_player(
     delay_ms: u64,
 ) -> Result<VideoPlayer> {
     let clients = [ClientType::VisionOs, ClientType::Ios, ClientType::Android];
-    let mut start = 0;
-    loop {
+    let mut last_error = None;
+    for (index, client) in clients.iter().enumerate() {
         pace(source, Duration::from_millis(delay_ms)).await;
-        let player = rp
-            .query()
-            .player_from_clients(video, &clients[start..])
-            .await?;
+        let player = match rp.query().player_from_clients(video, &[*client]).await {
+            Ok(player) => player,
+            Err(error) if retry_player_profile(&error) && index + 1 < clients.len() => {
+                record.log("warning",format!("The {client:?} player could not resolve this video ({error}). Trying another player profile.")).await?;
+                last_error = Some(anyhow::Error::from(error));
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
         anyhow::ensure!(
             player.drm.is_none() && !player.details.is_live,
             "Protected and live streams are not supported"
         );
         match crate::youtube_audio::select(&player) {
             Ok(_) => return Ok(player),
+            Err(error) if index + 1 == clients.len() => {
+                last_error = Some(error);
+            }
             Err(error) => {
-                start = clients
-                    .iter()
-                    .position(|c| *c == player.client_type)
-                    .unwrap_or(clients.len())
-                    + 1;
-                if start >= clients.len() {
-                    return Err(error.context("Could not identify playable original audio with the available player profiles"));
-                }
                 record
                     .log(
                         "warning",
@@ -303,9 +303,29 @@ pub(crate) async fn original_audio_player(
                         ),
                     )
                     .await?;
+                last_error = Some(error);
             }
         }
     }
+    Err(last_error
+        .unwrap_or_else(|| anyhow::anyhow!("No player profiles are available"))
+        .context("Could not resolve playable original audio with the available player profiles"))
+}
+
+fn retry_player_profile(error: &rustypipe::error::Error) -> bool {
+    use rustypipe::error::{Error, ExtractionError, UnavailabilityReason};
+    matches!(
+        error,
+        Error::Extraction(
+            ExtractionError::Unavailable {
+                reason: UnavailabilityReason::Unplayable
+                    | UnavailabilityReason::UnsupportedClient
+                    | UnavailabilityReason::TryAgain,
+                ..
+            } | ExtractionError::WrongResult(_)
+                | ExtractionError::Botguard(_)
+        )
+    )
 }
 
 pub async fn download(record: &Record) -> Result<()> {
@@ -852,6 +872,46 @@ async fn stream_file_with_policy(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn player_fallback_distinguishes_profile_errors_from_restrictions_and_rate_limits() {
+        use rustypipe::error::{Error, ExtractionError, UnavailabilityReason as Reason};
+        for reason in [
+            Reason::Unplayable,
+            Reason::UnsupportedClient,
+            Reason::TryAgain,
+        ] {
+            assert!(super::retry_player_profile(&Error::Extraction(
+                ExtractionError::Unavailable {
+                    reason,
+                    msg: "Client response".into()
+                }
+            )));
+        }
+        for reason in [
+            Reason::Private,
+            Reason::Deleted,
+            Reason::AgeRestricted,
+            Reason::Geoblocked,
+            Reason::Paid,
+            Reason::Premium,
+            Reason::MembersOnly,
+            Reason::IpBan,
+            Reason::Captcha,
+        ] {
+            assert!(!super::retry_player_profile(&Error::Extraction(
+                ExtractionError::Unavailable {
+                    reason,
+                    msg: "Restricted".into()
+                }
+            )));
+        }
+        for status in [403, 429, 503] {
+            assert!(!super::retry_player_profile(&Error::HttpStatus(
+                status,
+                "Server response".into()
+            )));
+        }
+    }
     use super::*;
     use axum::{
         body::Body,

@@ -1,0 +1,3 @@
+Retry another native YouTube player profile when a playable video is reported unavailable by one profile. Preserve original-audio selection, access restrictions, and rate-limit handling. Verified the affected video through download, audio/video muxing, and ZIM validation.
+
+Move Retry & resume next to the error and progress display, with a reminder that downloaded files are reused.

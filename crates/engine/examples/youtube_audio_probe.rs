@@ -34,6 +34,29 @@ async fn main() -> Result<()> {
         .timeout(std::time::Duration::from_secs(45))
         .n_http_retries(1)
         .build()?;
+    if std::env::args().any(|arg| arg == "--profiles") {
+        for client in [
+            ClientType::VisionOs,
+            ClientType::Ios,
+            ClientType::Android,
+            ClientType::Tv,
+            ClientType::Desktop,
+        ] {
+            let result = rp.query().player_from_client(&id, client).await;
+            match result {
+                Ok(player) => println!(
+                    "{}",
+                    serde_json::json!({"client":format!("{client:?}"),"title":player.details.name,"audio":player.audio_streams.len(),"video":player.video_streams.len(),"video_only":player.video_only_streams.len(),"selection":zim_engine::youtube_audio::select(&player).map(|s|s.audio_note()).map_err(|e|e.to_string())})
+                ),
+                Err(error) => println!(
+                    "{}",
+                    serde_json::json!({"client":format!("{client:?}"),"error":error.to_string()})
+                ),
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+        return Ok(());
+    }
     let player = rp
         .query()
         .player_from_clients(

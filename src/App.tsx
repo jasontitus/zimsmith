@@ -1245,6 +1245,26 @@ export default function App() {
                 </div>
               )}
               <JobProgress job={job} />
+              {["paused", "failed"].includes(job.status) &&
+                (!job.import || job.import.finished) && (
+                  <section className="panel rebuild-panel">
+                    <div>
+                      <h2>Continue this crawl</h2>
+                      <p>
+                        Saved files are reused. Only unfinished items are
+                        retried.
+                      </p>
+                    </div>
+                    <button
+                      className="button primary"
+                      disabled={busy}
+                      onClick={() => void action(() => api.resume(job.id))}
+                    >
+                      <Play size={16} />
+                      {job.status === "failed" ? "Retry & resume" : "Resume"}
+                    </button>
+                  </section>
+                )}
               {job.import && !job.import.finished && (
                 <section className="panel rebuild-panel">
                   <div>
@@ -1690,21 +1710,7 @@ export default function App() {
                         <Pause size={16} />
                         Pause
                       </button>
-                    ) : (
-                      ["paused", "failed"].includes(job.status) &&
-                      (!job.import || job.import.finished) && (
-                        <button
-                          className="button secondary"
-                          disabled={busy}
-                          onClick={() => void action(() => api.resume(job.id))}
-                        >
-                          <Play size={16} />
-                          {job.status === "failed"
-                            ? "Retry & resume"
-                            : "Resume"}
-                        </button>
-                      )
-                    )}
+                    ) : null}
                     {["review", "failed"].includes(job.status) &&
                       job.entries.some((e) => e.state !== "scan_failed") && (
                         <button

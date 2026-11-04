@@ -71,6 +71,11 @@ async function failedPhone(page: Page, status = "failed") {
           return w.attempt;
         }
         w.recoveryCalls.push(command);
+        if (command === "resume_job") {
+          w.attempt.status = "downloading";
+          w.attempt.error = null;
+          return w.attempt;
+        }
         if (command === "build_available_job") {
           w.attempt.status = "packaging";
           w.attempt.phase = "package";
@@ -96,6 +101,28 @@ async function failedPhone(page: Page, status = "failed") {
     .filter({ hasText: "Interrupted collection" })
     .click();
 }
+
+test("phone retry is beside the error and resumes the saved crawl", async ({
+  page,
+}) => {
+  await failedPhone(page);
+  const retry = page.getByRole("button", {
+    name: "Retry & resume",
+    exact: true,
+  });
+  await expect(retry).toHaveCount(1);
+  await expect(retry).toBeInViewport();
+  await expect(
+    page.getByText(
+      "Saved files are reused. Only unfinished items are retried.",
+    ),
+  ).toBeVisible();
+  await retry.click();
+  expect(await page.evaluate(() => (window as any).recoveryCalls)).toEqual([
+    "resume_job",
+  ]);
+  await expect(retry).toHaveCount(0);
+});
 
 test("delete asks first, cancellation preserves attempt, confirmation removes it", async ({
   page,
