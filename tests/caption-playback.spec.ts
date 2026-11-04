@@ -129,7 +129,12 @@ test("caption search opens a playback timestamp and the gallery carries subtitle
       .click();
     await expect(page.locator(".gallery-player")).not.toBeVisible();
   } finally {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    const closed = new Promise<void>((resolve) =>
+      server.close(() => resolve()),
+    );
+    // Chromium can leave a preconnected/media socket open after assertions.
+    server.closeAllConnections();
+    await closed;
     await rm(temp, { recursive: true, force: true });
   }
 });
