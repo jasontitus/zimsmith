@@ -4,15 +4,15 @@
   "channel": "direct",
   "releases": [
     {
-      "version": "0.2.8",
-      "version_code": 2008,
+      "version": "0.2.9",
+      "version_code": 2009,
       "abi": "arm64-v8a",
       "min_sdk": 24,
-      "url": "https://github.com/jasontitus/zimsmith/releases/download/v0.2.8/Zimsmith-0.2.8-arm64-v8a-473fa9c73b25.apk",
-      "sha256": "473fa9c73b252613b833d55e4179496d71e5fdc08e1c96176d343acb58c27e66",
+      "url": "https://github.com/jasontitus/zimsmith/releases/download/v0.2.9/Zimsmith-0.2.9-arm64-v8a-081ca7a42d14.apk",
+      "sha256": "081ca7a42d144bfa6fad1b94a25bc0280be80a38543869fe9f9f0d2cfd1585cd",
       "certificate_sha256": "f05a21df94164c0695b4e422bb413e2b7e5971ef44ecab3e2666faacb287aa89",
-      "size_bytes": 40622733,
-      "notes": "Finish complete catalog captures without waiting for stalled images or fonts. Continue waiting for API data, preserve pagination, and honor rate limits. Verified with stalled-image, delayed-data, and HTTP 429 fixtures.\n\niOS reuses one temporary browser cache within a crawl instead of creating a new data store for every page. Progress now distinguishes scanned items from queued pages.\n\nReplace the phone review table with readable rows, page scrolling, larger selection controls, and compact URLs. Keep offline site menus closed even in readers that expand all article details.\n\nRestore saved product photos hidden by script-dependent loading classes. Add Original website: open the ZIM at its captured starting page, with the site’s navigation and a small link to search and collection contents. Existing downloads can be rebuilt without recrawling."
+      "size_bytes": 40614541,
+      "notes": "Fix combined MP4 playback in Kiwix Apple by placing playback metadata before media data. Preserve every encoded audio/video sample and its timing without transcoding.\n\nRebuild an existing downloaded collection to apply the repair; no video redownload is needed. Previously exported ZIM files stay unchanged.\n\nKeep packaging cancellable and memory bounded. Use 64-bit chunk offsets so large videos stay valid after metadata relocation."
     }
   ]
 }

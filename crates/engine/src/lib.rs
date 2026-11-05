@@ -8,6 +8,7 @@ mod images;
 pub mod imports;
 mod media;
 pub mod model;
+mod mp4_layout;
 mod mux;
 mod native_media;
 pub mod refresh;

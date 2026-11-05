@@ -1,0 +1,5 @@
+Fix combined MP4 playback in Kiwix Apple by placing playback metadata before media data. Preserve every encoded audio/video sample and its timing without transcoding.
+
+Rebuild an existing downloaded collection to apply the repair; no video redownload is needed. Previously exported ZIM files stay unchanged.
+
+Keep packaging cancellable and memory bounded. Use 64-bit chunk offsets so large videos stay valid after metadata relocation.

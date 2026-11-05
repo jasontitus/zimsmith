@@ -3,10 +3,11 @@
 use crate::Record;
 use anyhow::{Context, Result};
 use mp4_track::{
-    Edit, Limits, Mp4Reader, Mp4Writer, SampleInput, Track, TrackConfig, TrackKind, WriterConfig,
+    ChunkOffsetChoice, Edit, Limits, Mp4Reader, Mp4Writer, SampleInput, Track, TrackConfig,
+    TrackKind, WriterConfig,
 };
 use std::{
-    fs::File,
+    fs::{File, OpenOptions},
     io::{BufReader, BufWriter},
     path::{Path, PathBuf},
     sync::{
@@ -144,9 +145,18 @@ fn remux(
         );
         let movie_clock = inputs[0].movie_timescale();
         let mut writer = Mp4Writer::new(
-            BufWriter::with_capacity(64 * 1024, File::create(&partial)?),
+            BufWriter::with_capacity(
+                64 * 1024,
+                OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create_new(true)
+                    .open(&partial)?,
+            ),
             WriterConfig {
                 movie_timescale: movie_clock,
+                // Moving moov to the front can push a chunk past the 4 GB boundary.
+                chunk_offsets: ChunkOffsetChoice::Co64,
                 ..WriterConfig::default()
             },
         )?;
@@ -207,10 +217,11 @@ fn remux(
                 None
             };
         }
-        let file = writer
+        let mut file = writer
             .finish()?
             .into_inner()
             .map_err(|e| anyhow::anyhow!("Could not flush combined MP4: {e}"))?;
+        crate::mp4_layout::fast_start(&mut file, stop)?;
         file.sync_all()?;
         drop(file);
         anyhow::ensure!(!stop.load(Ordering::Relaxed), "MP4 combining paused");
@@ -246,6 +257,15 @@ mod tests {
             &AtomicU64::new(0),
         )
         .unwrap();
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = File::open(output).unwrap();
+        let mut header = [0; 8];
+        file.read_exact(&mut header).unwrap();
+        let first_size = u32::from_be_bytes(header[..4].try_into().unwrap());
+        assert_eq!(&header[4..8], b"ftyp");
+        file.seek(SeekFrom::Start(u64::from(first_size))).unwrap();
+        file.read_exact(&mut header).unwrap();
+        assert_eq!(&header[4..8], b"moov");
         let mut joined = open(output).unwrap();
         assert!(!joined.is_fragmented());
         assert_eq!(joined.tracks().len(), 2);
