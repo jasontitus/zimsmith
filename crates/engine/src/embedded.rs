@@ -104,7 +104,13 @@ fn player(entry: &Entry, subtitles: bool) -> String {
     let poster = entry
         .thumbnail_file
         .as_ref()
-        .map(|p| format!(" poster=\"{}\"", escape(p)))
+        .map(|p| {
+            format!(
+                " poster=\"{}\" data-zim-poster=\"{}\"",
+                escape(p),
+                escape(p)
+            )
+        })
         .unwrap_or_default();
     let tracks = entry
         .subtitles

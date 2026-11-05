@@ -467,7 +467,16 @@ fn rewrite_page(
     let style_paths = paths.clone();
     let style_base = base.clone();
     let prepared = crate::snapshot::prepare(html, &parsed)?;
-    let page = rewrite_str(&prepared, RewriteStrSettings { element_content_handlers: vec![
+    // Allow only our exact preview helper; captured scripts remain disabled.
+    let has_previews = prepared.contains("data-zim-poster=");
+    let script_policy = if has_previews {
+        templates::poster_policy()
+    } else {
+        "'none'".into()
+    };
+    let head = format!("<meta charset=\"utf-8\"><link rel=\"stylesheet\" href=\"studio.css\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'self' data:; script-src {script_policy}; style-src 'self' 'unsafe-inline'; form-action 'none'; connect-src 'none'\">");
+    let mut script_added = false;
+    let mut page = rewrite_str(&prepared, RewriteStrSettings { element_content_handlers: vec![
         element!("script, iframe, object, embed, base, meta[http-equiv], link[rel='preload'], link[rel='modulepreload']", |el| { el.remove(); Ok(()) }),
         element!("form", |el| { el.remove_and_keep_content(); Ok(()) }),
         element!("*", |el| {
@@ -506,13 +515,17 @@ fn rewrite_page(
             Ok(())
         }),
         element!("meta[charset]", |el| { el.set_attribute("charset", "utf-8")?; Ok(()) }),
-        element!("head", |el| { el.prepend("<link rel=\"stylesheet\" href=\"studio.css\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'self' data:; script-src 'none'; style-src 'self' 'unsafe-inline'; form-action 'none'; connect-src 'none'\">", lol_html::html_content::ContentType::Html); Ok(()) }),
+        element!("head", |el| { el.prepend(&head, lol_html::html_content::ContentType::Html); Ok(()) }),
         element!("body", |el| {
             el.prepend(&templates::render_nav(template, source.as_str()), lol_html::html_content::ContentType::Html);
             if template == ArchiveTemplate::Website { el.append("<footer class=\"zim-site-footer\"><a href=\"index.html\">Search &amp; collection contents</a></footer>",lol_html::html_content::ContentType::Html); }
+            if has_previews { el.append(&templates::poster_script(), lol_html::html_content::ContentType::Html); script_added = true; }
             Ok(())
         }),
     ], ..Default::default() })?;
+    if has_previews && !script_added {
+        page.push_str(&templates::poster_script());
+    }
     // Rewrite complete style blocks after parsing, so split streaming text chunks cannot break URLs.
     let re = regex::Regex::new(r"(?is)(<style[^>]*>)(.*?)(</style>)")?;
     Ok(re

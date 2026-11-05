@@ -168,6 +168,7 @@ async fn cached_embedded_video_is_packaged_inline_with_subtitles_and_no_network(
     video.media_file = Some("movie.mp4".into());
     video.media_audio = Some("audio.m4a".into());
     video.thumbnail_url = None;
+    video.thumbnail_file = Some("poster.png".into());
     video.subtitles = vec![zim_engine::captions::SavedSubtitle {
         file: "captions.vtt".into(),
         language: "en".into(),
@@ -195,7 +196,13 @@ async fn cached_embedded_video_is_packaged_inline_with_subtitles_and_no_network(
     )
     .await
     .unwrap();
-    tokio::fs::write(dir.join("cache/home.html"),r#"<title>Home</title><iframe src="https://www.youtube.com/embed/abcdefghijk"></iframe><div class="video" id="card"><img src="https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg"><button class="video__play--youtube"></button></div>"#).await.unwrap();
+    tokio::fs::write(
+        dir.join("media/poster.png"),
+        include_bytes!("../assets/zimsmith-icon-48.png"),
+    )
+    .await
+    .unwrap();
+    tokio::fs::write(dir.join("cache/home.html"),r#"<!doctype html><html><head><title>Home</title></head><body onload="window.sourceScriptRan = true"><iframe src="https://www.youtube.com/embed/abcdefghijk"></iframe><div class="video" id="card"><img src="https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg"><button class="video__play--youtube"></button></div><script>window.sourceScriptRan = true</script></body></html>"#).await.unwrap();
     tokio::fs::write(dir.join("job.json"), serde_json::to_vec(&fixture).unwrap())
         .await
         .unwrap();
@@ -212,6 +219,13 @@ async fn cached_embedded_video_is_packaged_inline_with_subtitles_and_no_network(
     assert!(page.contains("src=\"embedded-video-combined.mp4\""));
     assert!(page.contains("src=\"captions.vtt\""));
     assert!(!page.contains("<iframe") && !page.contains("Watch video online"));
+    assert!(page.contains("data-zim-poster=\"poster.png\""));
+    assert!(page.contains("script-src 'sha256-") && !page.contains("sourceScriptRan"));
+    assert!(archive
+        .get_text("studio.css")
+        .unwrap()
+        .contains(".zim-video-cover"));
+    assert!(archive.get_bytes("poster.png").unwrap().len() > 100);
     assert!(archive
         .get_entry_by_path("embedded-video-combined.mp4")
         .is_ok());

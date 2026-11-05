@@ -8,10 +8,23 @@ pub const ICON: &[u8] = include_bytes!("../assets/zimsmith-icon-48.png");
 pub const CSS: &str = include_str!("../assets/archive.css");
 pub const GALLERY_JS: &str = include_str!("../assets/gallery.js");
 pub const MEDIA_JS: &str = include_str!("../assets/media.js");
+const POSTER_JS: &str = include_str!("../assets/poster.js");
 pub const SEARCH_JS: &str = include_str!("../assets/search.js");
 pub const SANS: &[u8] = include_bytes!("../assets/fonts/dm-sans.woff2");
 pub const DISPLAY: &[u8] = include_bytes!("../assets/fonts/manrope.woff2");
 pub const FONT_LICENSE: &str = include_str!("../assets/fonts/LICENSE.txt");
+
+pub fn poster_policy() -> String {
+    use sha2::{Digest, Sha256};
+    format!(
+        "'sha256-{}'",
+        base64::engine::general_purpose::STANDARD.encode(Sha256::digest(POSTER_JS))
+    )
+}
+
+pub fn poster_script() -> String {
+    format!("<script>{POSTER_JS}</script>")
+}
 pub const WEBSITE_PREVIEW_BODY: &str = "<main class='archive-shell'><header class='archive-topbar'><strong>Your captured website</strong><nav aria-label='Site pages'><a href='#home'>Home</a> · <a href='#about'>About</a></nav></header><section class='archive-hero' id='home'><div class='hero-copy'><h1>The website, as you know it.</h1><p>Your saved starting page appears here. Browse using the website’s own pages and links.</p></div></section></main>";
 
 #[derive(Serialize)]
@@ -408,7 +421,13 @@ pub fn render_media(template: ArchiveTemplate, config: &NewJob, entry: &Entry) -
     let poster = entry
         .thumbnail_file
         .as_ref()
-        .map(|file| format!(" poster=\"{}\"", escape(file)))
+        .map(|file| {
+            format!(
+                " poster=\"{}\" data-zim-poster=\"{}\"",
+                escape(file),
+                escape(file)
+            )
+        })
         .unwrap_or_default();
     let tracks = entry
         .subtitles
@@ -454,8 +473,14 @@ pub fn render_media(template: ArchiveTemplate, config: &NewJob, entry: &Entry) -
         )
     };
 
+    let poster_script = if !audio_only && entry.thumbnail_file.is_some() {
+        poster_script()
+    } else {
+        String::new()
+    };
+    let poster_policy = poster_policy();
     format!(
-        r#"<!doctype html><html lang="{}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; font-src 'self'; img-src 'self'; media-src 'self'; form-action 'none'; base-uri 'none'"><title>{}</title><link rel="stylesheet" href="studio.css"></head><body class="zim-archive" data-zim-template="{}">{}<main class="archive-media"><p class="archive-eyebrow">FROM YOUR COLLECTION</p><h1>{}</h1><p class="media-collection">{}</p><div class="media-player">{player}</div><section class="media-description"><h2>About this item</h2><p>{}</p></section>{transcript}<a class="source-link" href="{}" rel="noopener noreferrer">{source_label} ↗</a></main><script src='media.js'></script></body></html>"#,
+        r#"<!doctype html><html lang="{}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self' {poster_policy}; font-src 'self'; img-src 'self'; media-src 'self'; form-action 'none'; base-uri 'none'"><title>{}</title><link rel="stylesheet" href="studio.css"></head><body class="zim-archive" data-zim-template="{}">{}<main class="archive-media"><p class="archive-eyebrow">FROM YOUR COLLECTION</p><h1>{}</h1><p class="media-collection">{}</p><div class="media-player">{player}</div><section class="media-description"><h2>About this item</h2><p>{}</p></section>{transcript}<a class="source-link" href="{}" rel="noopener noreferrer">{source_label} ↗</a></main>{poster_script}<script src='media.js'></script></body></html>"#,
         escape(&config.language),
         escape(&entry.title),
         template.id(),

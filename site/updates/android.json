@@ -4,15 +4,15 @@
   "channel": "direct",
   "releases": [
     {
-      "version": "0.2.9",
-      "version_code": 2009,
+      "version": "0.2.10",
+      "version_code": 2010,
       "abi": "arm64-v8a",
       "min_sdk": 24,
-      "url": "https://github.com/jasontitus/zimsmith/releases/download/v0.2.9/Zimsmith-0.2.9-arm64-v8a-081ca7a42d14.apk",
-      "sha256": "081ca7a42d144bfa6fad1b94a25bc0280be80a38543869fe9f9f0d2cfd1585cd",
+      "url": "https://github.com/jasontitus/zimsmith/releases/download/v0.2.10/Zimsmith-0.2.10-arm64-v8a-b91b4f9bcea9.apk",
+      "sha256": "b91b4f9bcea9c883a81b3bf75d4e1a7798d3b1cb33a1776c183180f4c12f5d07",
       "certificate_sha256": "f05a21df94164c0695b4e422bb413e2b7e5971ef44ecab3e2666faacb287aa89",
-      "size_bytes": 40614541,
-      "notes": "Fix combined MP4 playback in Kiwix Apple by placing playback metadata before media data. Preserve every encoded audio/video sample and its timing without transcoding.\n\nRebuild an existing downloaded collection to apply the repair; no video redownload is needed. Previously exported ZIM files stay unchanged.\n\nKeep packaging cancellable and memory bounded. Use 64-bit chunk offsets so large videos stay valid after metadata relocation."
+      "size_bytes": 40606349,
+      "notes": "Restore saved video previews on website pages, including Home and About, and on generated video pages. Keep previews visible in Kiwix Apple even when it removes native video posters. One tap starts playback and clears the image.\n\nRebuild an existing collection to apply the repair using saved artwork and videos. Preserve native playback controls, captions, and the 0.2.9 MP4 compatibility fix."
     }
   ]
 }
