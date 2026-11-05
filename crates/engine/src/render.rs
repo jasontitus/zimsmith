@@ -15,6 +15,8 @@ pub struct RenderRequest {
     #[serde(skip)]
     pub events: Option<tokio::sync::mpsc::UnboundedSender<RenderEvent>>,
     pub id: String,
+    #[serde(default)]
+    pub session_id: String,
     pub url: String,
     pub delay_ms: u64,
     pub timeout_secs: u64,
@@ -72,7 +74,10 @@ pub async fn capture(
     delay: std::time::Duration,
 ) -> Result<RenderedPage> {
     let renderer = record.renderer.read().await.clone().ok_or_else(|| anyhow::anyhow!("JavaScript rendering requires an installed Zimsmith app with its browser renderer. Use static capture or import saved HTML in this build."))?;
-    let config = record.job.lock().await.config.clone();
+    let (config, session_id) = {
+        let job = record.job.lock().await;
+        (job.config.clone(), job.id.clone())
+    };
     record
         .progress(
             format!("Rendering JavaScript and lazy content: {url}"),
@@ -90,6 +95,7 @@ pub async fn capture(
     let request = RenderRequest {
         events: Some(events),
         id: uuid::Uuid::new_v4().to_string(),
+        session_id,
         url: url.to_string(),
         delay_ms: delay.as_millis().min(86_400_000) as u64,
         timeout_secs: config.capture.render_timeout_secs,

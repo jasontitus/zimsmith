@@ -277,8 +277,8 @@ pub async fn validate(record: &Record, path: &std::path::Path) -> Result<Validat
         "ZIM directory or cluster structure is invalid"
     );
     anyhow::ensure!(
-        archive.main_path()? == "index.html",
-        "ZIM is missing its contents page"
+        archive.main_path()? == crate::archive::main_path(&*record.job.lock().await),
+        "ZIM is missing its expected starting page"
     );
     let index = archive.get_text("index.html")?;
     anyhow::ensure!(

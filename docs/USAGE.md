@@ -21,6 +21,7 @@ In **Settings → Download confirmation**, turn automatic downloads on or off an
 Choose an index-page template in **Settings → Archive appearance** and select **Save archive style**:
 
 - **Atlas**: a bright, spacious card grid with violet accents.
+- **Original website**: open at the captured starting page and follow the site’s saved links. A small footer links to search and collection contents. If the starting page is excluded, the archive opens at its contents instead. Rebuild an existing crawl to apply this without recrawling.
 - **Field Notes**: warm paper, serif headings, and a numbered editorial list.
 - **Midnight**: a dark library with mint accents.
 - **Screening Room**: a video gallery inspired by [TED’s ZIM gallery](https://github.com/openzim/ted/tree/main/src/ted2zim/templates), with offline thumbnails, duration badges, search, and a spacious cinema player. Tap a thumbnail to play immediately in the gallery overlay; tap the title or description to open the detail page. The thumbnail is a Play button rather than a page link, so Kiwix does not offer a link preview when it is closed. **Back to gallery** stops playback and returns focus to the thumbnail. **Next video** plays the next visible video, following any search filter; it is disabled on the last video. Finishing a clip stays in the player without opening a page or automatically advancing. Artwork is saved after approval, capped at 2 MB per image, and uses the asset pacing policy, robots rules, and 429 backoff. Missing artwork uses a placeholder and does not fail the video download.

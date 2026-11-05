@@ -1761,50 +1761,43 @@ export default function App() {
                     />
                   </div>
                 </div>
-                <div className="table-scroll">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th className="checkbox-cell" />
-                        <th>ITEM</th>
-                        <th>
-                          {job.config.kind === "media"
-                            ? "DURATION"
-                            : job.entries.some((e) => e.embedded_in?.length)
-                              ? "DEPTH / DURATION"
-                              : "DEPTH"}
-                        </th>
-                        <th>KNOWN SIZE</th>
-                        <th>STATUS</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {job.entries
-                        .filter((e) =>
-                          `${e.title} ${e.url}`
-                            .toLowerCase()
-                            .includes(filter.toLowerCase()),
-                        )
-                        .map((entry) => (
-                          <EntryRow
-                            key={entry.id}
-                            entry={entry}
-                            media={job.config.kind === "media"}
-                            selected={selection.has(entry.id)}
-                            editable={["review", "failed"].includes(job.status)}
-                            onToggle={() =>
-                              setSelection((previous) => {
-                                const next = new Set(previous);
-                                next.has(entry.id)
-                                  ? next.delete(entry.id)
-                                  : next.add(entry.id);
-                                return next;
-                              })
-                            }
-                          />
-                        ))}
-                    </tbody>
-                  </table>
+                <div className="collection-items-container">
+                  <div className="collection-columns" aria-hidden="true">
+                    <span />
+                    <span>ITEM</span>
+                    <span>DEPTH / DURATION</span>
+                    <span>KNOWN SIZE</span>
+                    <span>STATUS</span>
+                  </div>
+                  <ul
+                    className="collection-items"
+                    aria-label="Collection items"
+                  >
+                    {job.entries
+                      .filter((e) =>
+                        `${e.title} ${e.url}`
+                          .toLowerCase()
+                          .includes(filter.toLowerCase()),
+                      )
+                      .map((entry) => (
+                        <EntryRow
+                          key={entry.id}
+                          entry={entry}
+                          media={job.config.kind === "media"}
+                          selected={selection.has(entry.id)}
+                          editable={["review", "failed"].includes(job.status)}
+                          onToggle={() =>
+                            setSelection((previous) => {
+                              const next = new Set(previous);
+                              next.has(entry.id)
+                                ? next.delete(entry.id)
+                                : next.add(entry.id);
+                              return next;
+                            })
+                          }
+                        />
+                      ))}
+                  </ul>
                   {job.entries.length === 0 && (
                     <div className="empty-large">
                       <LoaderCircle className="spin" size={28} />
@@ -2408,8 +2401,8 @@ function EntryRow({
 }) {
   media ||= !!entry.embedded_in?.length;
   return (
-    <tr>
-      <td className="checkbox-cell">
+    <li className="collection-item">
+      <label className="entry-selector">
         <input
           type="checkbox"
           aria-label={`Select ${entry.title}`}
@@ -2417,40 +2410,42 @@ function EntryRow({
           checked={selected}
           onChange={onToggle}
         />
-      </td>
-      <td>
-        <div className="entry-title">
-          {media ? <Video size={17} /> : <FileText size={17} />}
-          <span>
-            <strong>{entry.title}</strong>
-            <small title={entry.url}>{entry.url}</small>
-            {!!entry.embedded_in?.length && (
-              <small>
-                Embedded video · referenced by {entry.embedded_in.length}{" "}
-                page(s)
-              </small>
-            )}
-            {entry.rendered && (
-              <small>
-                {entry.rendered.settled
-                  ? "Browser snapshot"
-                  : "Browser snapshot may be incomplete"}
-              </small>
-            )}
-            {entry.rendered?.warnings.slice(0, 2).map((warning, index) => (
-              <small className="entry-error" key={index}>
-                {warning}
-              </small>
-            ))}
-            {entry.error && (
-              <small className="entry-error">{entry.error}</small>
-            )}
-          </span>
-        </div>
-      </td>
-      <td>{media ? duration(entry.duration) : entry.depth}</td>
-      <td>{bytes(entry.size)}</td>
-      <td>
+      </label>
+      <div className="entry-title">
+        {media ? <Video size={17} /> : <FileText size={17} />}
+        <span>
+          <strong>{entry.title}</strong>
+          <small className="entry-url" title={entry.url}>
+            {entry.url}
+          </small>
+          {!!entry.embedded_in?.length && (
+            <small>
+              Embedded video · referenced by {entry.embedded_in.length} page(s)
+            </small>
+          )}
+          {entry.rendered && (
+            <small>
+              {entry.rendered.settled
+                ? "Browser snapshot"
+                : "Browser snapshot may be incomplete"}
+            </small>
+          )}
+          {entry.rendered?.warnings.slice(0, 2).map((warning, index) => (
+            <small className="entry-error" key={index}>
+              {warning}
+            </small>
+          ))}
+          {entry.error && <small className="entry-error">{entry.error}</small>}
+        </span>
+      </div>
+      <div className="entry-metadata">
+        <span className="entry-metric">
+          <span>{media ? "Duration" : "Depth"}</span>{" "}
+          {media ? duration(entry.duration) : entry.depth}
+        </span>
+        <span className="entry-metric">
+          <span>Size</span> {bytes(entry.size)}
+        </span>
         <span className={`entry-state ${entry.state}`}>
           {entry.state === "done" ? (
             <Check size={13} />
@@ -2465,7 +2460,7 @@ function EntryRow({
               ? "Saved"
               : "Failed"}
         </span>
-      </td>
-    </tr>
+      </div>
+    </li>
   );
 }

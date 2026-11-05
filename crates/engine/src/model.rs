@@ -9,6 +9,7 @@ pub enum ArchiveTemplate {
     FieldNotes,
     Midnight,
     ScreeningRoom,
+    Website,
 }
 
 impl ArchiveTemplate {
@@ -18,6 +19,7 @@ impl ArchiveTemplate {
             Self::FieldNotes => "field_notes",
             Self::Midnight => "midnight",
             Self::ScreeningRoom => "screening_room",
+            Self::Website => "website",
         }
     }
 }

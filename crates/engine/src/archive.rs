@@ -17,6 +17,17 @@ pub fn escape(text: &str) -> String {
         .replace('\'', "&#39;")
 }
 
+pub(crate) fn main_path(job: &Job) -> String {
+    if job.archive_template == ArchiveTemplate::Website && job.config.kind == SourceKind::Website {
+        if let Some(root) = job.entries.iter().find(|e| {
+            e.url == job.config.url && e.selected && e.state == "done" && e.media_file.is_none()
+        }) {
+            return format!("{}.html", root.id);
+        }
+    }
+    "index.html".into()
+}
+
 pub async fn package(record: &Record) -> Result<()> {
     crate::web::repair_saved_stylesheets(record).await?;
     crate::thumbnails::prepare(record).await?;
@@ -229,7 +240,7 @@ pub async fn package(record: &Record) -> Result<()> {
         .set_cluster_size_target(1024 * 1024)
         .set_max_in_flight_bytes(8 * 1024 * 1024)
         .set_streaming_encode_threshold(256 * 1024);
-    creator.try_set_main_path("index.html")?;
+    creator.try_set_main_path(main_path(&job))?;
     for (name, value) in [
         ("Title", job.config.title.as_str()),
         ("Description", &job.config.description),
@@ -496,7 +507,11 @@ fn rewrite_page(
         }),
         element!("meta[charset]", |el| { el.set_attribute("charset", "utf-8")?; Ok(()) }),
         element!("head", |el| { el.prepend("<link rel=\"stylesheet\" href=\"studio.css\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'self' data:; script-src 'none'; style-src 'self' 'unsafe-inline'; form-action 'none'; connect-src 'none'\">", lol_html::html_content::ContentType::Html); Ok(()) }),
-        element!("body", |el| { el.prepend(&templates::render_nav(template, source.as_str()), lol_html::html_content::ContentType::Html); Ok(()) }),
+        element!("body", |el| {
+            el.prepend(&templates::render_nav(template, source.as_str()), lol_html::html_content::ContentType::Html);
+            if template == ArchiveTemplate::Website { el.append("<footer class=\"zim-site-footer\"><a href=\"index.html\">Search &amp; collection contents</a></footer>",lol_html::html_content::ContentType::Html); }
+            Ok(())
+        }),
     ], ..Default::default() })?;
     // Rewrite complete style blocks after parsing, so split streaming text chunks cannot break URLs.
     let re = regex::Regex::new(r"(?is)(<style[^>]*>)(.*?)(</style>)")?;
@@ -534,6 +549,24 @@ fn write_icon(path: &std::path::Path) -> Result<()> {
 mod tests {
     use super::*;
     #[test]
+    fn saved_images_do_not_keep_script_dependent_loading_markers() {
+        let paths = BTreeMap::from([("https://example.test/photo.jpg".into(), "photo.jpg".into())]);
+        let html = "<html><body><img class='ecommerce-product-image ecommerce-product-image--loading' src='/photo.jpg'><img class='photo lazyloading' src='/photo.jpg'><div class='intentionally-hidden'>Other content</div></body></html>";
+        let output = rewrite_page(
+            html,
+            &http_url("https://example.test/").unwrap(),
+            &paths,
+            ArchiveTemplate::Website,
+        )
+        .unwrap();
+        assert!(!output.contains("ecommerce-product-image--loading"));
+        assert!(!output.contains("lazyloading"));
+        assert!(output.contains("photo lazyloaded"));
+        assert!(output.contains("ecommerce-product-image"));
+        assert!(output.contains("intentionally-hidden"));
+        assert!(output.contains("src=\"photo.jpg\""));
+    }
+    #[test]
     fn restores_static_animations_menus_embeds_and_entity_escaped_asset_urls() {
         let source = http_url("https://example.test/").unwrap();
         let paths = BTreeMap::from([
@@ -565,7 +598,7 @@ mod tests {
         );
         assert!(output.contains("data-animation-state=\"active\""));
         assert!(output.contains("class=\" loaded\"") || output.contains("class=\"loaded\""));
-        assert!(output.contains("<summary>Menu</summary>"));
+        assert!(output.contains("class=\"zim-menu-toggle\""));
         assert!(output.contains("href=\"about.html\""));
         assert!(output.contains("https://youtu.be/abcdefghijk"));
         assert!(output.contains("Watch video online"));

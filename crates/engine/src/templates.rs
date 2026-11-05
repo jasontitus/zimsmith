@@ -12,6 +12,7 @@ pub const SEARCH_JS: &str = include_str!("../assets/search.js");
 pub const SANS: &[u8] = include_bytes!("../assets/fonts/dm-sans.woff2");
 pub const DISPLAY: &[u8] = include_bytes!("../assets/fonts/manrope.woff2");
 pub const FONT_LICENSE: &str = include_str!("../assets/fonts/LICENSE.txt");
+pub const WEBSITE_PREVIEW_BODY: &str = "<main class='archive-shell'><header class='archive-topbar'><strong>Your captured website</strong><nav aria-label='Site pages'><a href='#home'>Home</a> · <a href='#about'>About</a></nav></header><section class='archive-hero' id='home'><div class='hero-copy'><h1>The website, as you know it.</h1><p>Your saved starting page appears here. Browse using the website’s own pages and links.</p></div></section></main>";
 
 #[derive(Serialize)]
 pub struct TemplateOption {
@@ -42,6 +43,11 @@ pub fn catalog() -> Vec<TemplateOption> {
             name: "Screening Room",
             description:
                 "A video gallery with offline thumbnails, duration badges, and a cinema player.",
+        },
+        TemplateOption {
+            id: ArchiveTemplate::Website,
+            name: "Original website",
+            description: "Open at the saved starting page and follow the website’s own links. Search and collection contents are still included.",
         },
     ]
 }
@@ -266,6 +272,7 @@ pub fn render_index(
         ArchiveTemplate::FieldNotes => "Collected for the curious.",
         ArchiveTemplate::Midnight => "Keep exploring. Anywhere.",
         ArchiveTemplate::ScreeningRoom => "Your front row. Anywhere.",
+        ArchiveTemplate::Website => "Your website, offline.",
     };
     let cards: String = catalog
         .documents
@@ -311,6 +318,9 @@ pub fn render_index(
     } else {
         ("<link rel='stylesheet' href='studio.css'>".into(), "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; media-src 'self'; base-uri 'none'; form-action 'none'")
     };
+    if preview && template == ArchiveTemplate::Website {
+        return Ok(format!("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta http-equiv=\"Content-Security-Policy\" content=\"{policy}\"><title>Original website</title>{assets}</head><body class=\"zim-archive\" data-zim-template=\"website\">{WEBSITE_PREVIEW_BODY}</body></html>"));
+    }
     let scripts = if preview {
         String::new()
     } else {
@@ -375,6 +385,9 @@ pub fn render_index(
 }
 
 pub fn render_nav(template: ArchiveTemplate, source: &str) -> String {
+    if template == ArchiveTemplate::Website {
+        return String::new();
+    }
     if source.starts_with("https://local-import.invalid/") {
         return format!("<nav class='zim-archive-nav' data-zim-template='{}' aria-label='Archive navigation'><a href='index.html'>← Collection contents</a><span>Imported saved content</span></nav>", template.id());
     }

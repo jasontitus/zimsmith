@@ -44,7 +44,11 @@ export function JobProgress({
   const total = scan
     ? null
     : (progress?.total ?? (job.phase === "download" ? selected.length : null));
-  const unit = scan ? "items found" : progress?.unit || "items";
+  const unit = scan
+    ? job.config.kind === "website"
+      ? "items scanned"
+      : "items found"
+    : progress?.unit || "items";
   const percent =
     total && total > 0
       ? Math.min(100, Math.floor((completed / total) * 100))
@@ -113,6 +117,13 @@ export function JobProgress({
         <div style={{ width: percent === null ? undefined : `${percent}%` }} />
       </div>
       <p className="progress-detail">{label}</p>
+      {!compact &&
+        job.status === "scanning" &&
+        job.config.kind === "website" && (
+          <p className="progress-detail">
+            Each queued page is opened and captured before review.
+          </p>
+        )}
       {!compact && scan && progress?.unit === "render_items" && (
         <div className="transfer-progress">
           <span>Current page’s list items</span>

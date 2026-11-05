@@ -1,4 +1,26 @@
 export function staticPresentation(document: Document) {
+  for (const template of document.querySelectorAll<HTMLTemplateElement>(
+    ".product-carousel__image-wrapper template",
+  )) {
+    template.replaceWith(template.content.cloneNode(true));
+  }
+  for (const wrapper of document.querySelectorAll(
+    ".product-carousel__image-wrapper",
+  )) {
+    if (wrapper.querySelector("img"))
+      wrapper.classList.add("zim-static-product-image");
+  }
+  for (const image of document.querySelectorAll("img")) {
+    const lazy =
+      image.classList.contains("lazyload") ||
+      image.classList.contains("lazyloading");
+    image.classList.remove(
+      "ecommerce-product-image--loading",
+      "lazyload",
+      "lazyloading",
+    );
+    if (lazy) image.classList.add("lazyloaded");
+  }
   for (const frame of document.querySelectorAll("iframe,embed,object")) {
     const value =
       frame.getAttribute("src") ||
@@ -94,16 +116,23 @@ export function staticPresentation(document: Document) {
     if (links.length === 100) break;
   }
   if (!links.length) return;
+  let index = 0;
   for (const button of buttons) {
-    const details = document.createElement("details");
-    details.className = "zim-site-menu";
-    const summary = document.createElement("summary");
-    summary.textContent = "Menu";
+    const menu = document.createElement("div");
+    menu.className = "zim-site-menu";
+    const toggle = document.createElement("input");
+    toggle.type = "checkbox";
+    toggle.className = "zim-menu-toggle";
+    toggle.id = `zim-site-menu-toggle-${index++}`;
+    toggle.setAttribute("aria-label", "Site menu");
+    const label = document.createElement("label");
+    label.setAttribute("for", toggle.id);
+    label.textContent = "Menu";
     const nav = document.createElement("nav");
     nav.setAttribute("aria-label", "Site pages");
     links.forEach((link) => nav.append(link.cloneNode(true)));
-    details.append(summary, nav);
-    button.replaceWith(details);
+    menu.append(toggle, label, nav);
+    button.replaceWith(menu);
   }
   document
     .querySelectorAll(".block-header-layout-mobile__dropdown")

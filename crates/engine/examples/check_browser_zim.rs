@@ -14,8 +14,8 @@ fn main() -> anyhow::Result<()> {
         "ZIM structure is invalid"
     );
     anyhow::ensure!(
-        archive.main_path()? == "index.html",
-        "Missing contents page"
+        !archive.get_text(&archive.main_path()?)?.is_empty(),
+        "Missing starting page"
     );
     let index = archive.get_text("index.html")?;
     anyhow::ensure!(

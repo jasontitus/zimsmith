@@ -8,6 +8,8 @@
   const origins = new Map(), xhrs = new WeakMap();
   const catalogs = new Map();
   const state = { pending: 0, changed: started, scrolled: started, steps: 0, clicks: 0, height: 0, settled: false, done: false, rate_limit: null, warnings: [], result: null };
+  let domReady = document.readyState !== "loading";
+  document.addEventListener("DOMContentLoaded", () => { domReady = true; }, { once: true });
   const warn = message => { if (state.warnings.length < 20 && !state.warnings.includes(message)) state.warnings.push(message); };
   function limited(url, status, retry_after) {
     if (status === 429 || status === 503) state.rate_limit = { url: String(url), status, retry_after: retry_after || null };
@@ -177,9 +179,12 @@
     const now = performance.now(), elapsed = now - started;
     if (elapsed >= deadline) return snapshot(false);
     for (const media of document.querySelectorAll("video,audio")) { media.pause(); if (media.preload !== "none") media.preload = "none"; }
-    if (document.readyState !== "complete" || state.pending) return null;
+    if (!domReady || state.pending) return null;
     if (collectCatalogs(now)) return null;
     if (catalogs.size && Array.from(catalogs.values()).every(catalog => catalog.finished && !catalog.waiting && now - catalog.changed >= 1000) && elapsed >= 3000) return snapshot(true);
+    // A complete, bounded catalog does not need to wait for unrelated images or fonts.
+    // Other pages still wait for the load event before applying generic settling rules.
+    if (document.readyState !== "complete") return null;
     const height = Math.max(document.body?.scrollHeight || 0, document.documentElement.scrollHeight);
     if (now - state.scrolled >= 750 && state.steps < 20) {
       const bottom = window.scrollY + window.innerHeight >= height - 4;

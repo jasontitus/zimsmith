@@ -1,0 +1,7 @@
+Finish complete catalog captures without waiting for stalled images or fonts. Continue waiting for API data, preserve pagination, and honor rate limits. Verified with stalled-image, delayed-data, and HTTP 429 fixtures.
+
+iOS reuses one temporary browser cache within a crawl instead of creating a new data store for every page. Progress now distinguishes scanned items from queued pages.
+
+Replace the phone review table with readable rows, page scrolling, larger selection controls, and compact URLs. Keep offline site menus closed even in readers that expand all article details.
+
+Restore saved product photos hidden by script-dependent loading classes. Add Original website: open the ZIM at its captured starting page, with the site’s navigation and a small link to search and collection contents. Existing downloads can be rebuilt without recrawling.

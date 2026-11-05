@@ -192,6 +192,8 @@ export async function preview(template: ArchiveTemplate) {
   const style = document.createElement("style");
   style.textContent = styles;
   document.head.append(style);
+  if (template === "website")
+    document.body.innerHTML = templateData.website_preview_body;
   document.querySelectorAll("img").forEach((img) => img.remove());
   return "<!doctype html>" + document.documentElement.outerHTML;
 }

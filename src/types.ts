@@ -1,6 +1,6 @@
 export type SourceKind = "website" | "media";
 export type ArchiveTemplate =
-  "atlas" | "field_notes" | "midnight" | "screening_room";
+  "atlas" | "field_notes" | "midnight" | "screening_room" | "website";
 export interface ArchiveTemplateOption {
   id: ArchiveTemplate;
   name: string;

@@ -13,11 +13,14 @@ private struct SharedLinkArgs: Decodable { let id: String }
 
 final class MobileFilesPlugin: Plugin, UIDocumentPickerDelegate, UIDocumentInteractionControllerDelegate {
     private var captures: [String: PageCapture] = [:]
+    private var captureSession: PageCaptureSession?
     @objc public func renderPage(_ invoke: Invoke) throws {
         let args = try invoke.parseArgs(RenderPageArgs.self)
         DispatchQueue.main.async {
             guard self.captures.isEmpty, let host = self.manager.viewController?.view else { invoke.reject("The page browser is still stopping. Retry shortly."); return }
-            let capture = PageCapture(args, success: { invoke.resolve($0) }, failure: { invoke.reject($0) }) { [weak self] id in self?.captures.removeValue(forKey: id) }
+            let sessionId = args.request.session_id.flatMap { $0.isEmpty ? nil : $0 } ?? args.request.id
+            if self.captureSession?.id != sessionId { self.captureSession = PageCaptureSession(id: sessionId) }
+            let capture = PageCapture(args, session: self.captureSession, success: { invoke.resolve($0) }, failure: { invoke.reject($0) }) { [weak self] id in self?.captures.removeValue(forKey: id) }
             self.captures[args.request.id] = capture
             capture.start(in: host)
         }

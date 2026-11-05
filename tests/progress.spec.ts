@@ -41,6 +41,7 @@ test("progress shows work, transfer bytes, cooldowns and errors with readable lo
     error: null as string | null,
     bytes: 0,
     requests: 2,
+    queued_pages: 0,
     auto_start_item_limit: null,
     progress: {
       label: "Requesting playlist metadata",
@@ -81,6 +82,12 @@ test("progress shows work, transfer bytes, cooldowns and errors with readable lo
   await expect(progress).toContainText("2 items found");
   await expect(progress.getByRole("progressbar")).not.toHaveAttribute(
     "aria-valuenow",
+  );
+  job.config.kind = "website";
+  job.queued_pages = 4;
+  await expect(progress).toContainText("2 items scanned · 4 pages queued");
+  await expect(progress).toContainText(
+    "Each queued page is opened and captured before review.",
   );
   job.phase = "download";
   job.status = "downloading";

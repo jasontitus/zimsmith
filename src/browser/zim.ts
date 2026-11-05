@@ -35,6 +35,7 @@ export async function writeZim(
   source: ZimItem[],
   check: () => void,
   progress: (done: number, total: number) => Promise<void>,
+  mainPath = "index.html",
 ) {
   const items = [...source];
   const listing = {
@@ -153,7 +154,7 @@ export async function writeZim(
   ])
     view.setBigUint64(at, BigInt(n), true);
   const main = items.findIndex(
-    (i) => (i.namespace || "C") === "C" && i.path === "index.html",
+    (i) => (i.namespace || "C") === "C" && i.path === mainPath,
   );
   if (main < 0) throw new Error("ZIM contents page is missing.");
   view.setUint32(64, main, true);
@@ -183,6 +184,7 @@ export async function verifyZim(
   file: SyncFile,
   check: () => void,
   progress: (done: number, total: number) => Promise<void>,
+  mainPath = "index.html",
 ) {
   const size = file.getSize(),
     header = new Uint8Array(80);
@@ -274,8 +276,11 @@ export async function verifyZim(
     records.push({ key, title: title.value, namespace });
     if (i % 500 === 0) await progress(i, entries);
   }
-  if (records[main].key !== "C/index.html")
-    throw new Error("ZIM is missing its contents page.");
+  if (
+    records[main].key !== `C/${mainPath}` ||
+    !records.some((r) => r.key === "C/index.html")
+  )
+    throw new Error("ZIM is missing its starting page or contents page.");
   const seen = new Set<number>();
   let previous = -1;
   for (let i = 0; i < entries; i++) {

@@ -87,14 +87,61 @@ pub fn prepare(html: &str, document: &Html) -> Result<String> {
     let videos = video_links(document);
     let has_videos = !videos.is_empty();
     let catalogs = missing_catalogs(document);
-    if !has_menu && !has_videos && catalogs.is_empty() {
+    let loading_images = document
+        .select(
+            &Selector::parse("img.ecommerce-product-image--loading,img.lazyload,img.lazyloading")
+                .unwrap(),
+        )
+        .next()
+        .is_some();
+    let product_images = document
+        .select(&Selector::parse(".product-carousel__image-wrapper").unwrap())
+        .next()
+        .is_some();
+    if !has_menu && !has_videos && catalogs.is_empty() && !loading_images && !product_images {
         return Ok(html.into());
     }
-    let replacement = format!("<details class=\"zim-site-menu\"><summary>Menu</summary><nav aria-label=\"Site pages\">{links}</nav></details>");
+    // Some readers expand every <details> on load, including navigation menus.
+    // This native checkbox keeps the menu closed and works without source JavaScript.
+    let mut menu_index = 0;
     Ok(rewrite_str(
         html,
         RewriteStrSettings {
             element_content_handlers: vec![
+                element!(".product-carousel__image-wrapper", move |el| {
+                    if product_images {
+                        let classes = el.get_attribute("class").unwrap_or_default();
+                        el.set_attribute("class", &format!("{classes} zim-static-product-image"))?;
+                    }
+                    Ok(())
+                }),
+                element!(".product-carousel__image-wrapper template", |el| {
+                    el.remove_and_keep_content();
+                    Ok(())
+                }),
+                element!("img", |el| {
+                    if let Some(classes) = el.get_attribute("class") {
+                        let lazy = classes
+                            .split_whitespace()
+                            .any(|c| ["lazyload", "lazyloading"].contains(&c));
+                        let mut classes = classes
+                            .split_whitespace()
+                            .filter(|c| {
+                                ![
+                                    "ecommerce-product-image--loading",
+                                    "lazyload",
+                                    "lazyloading",
+                                ]
+                                .contains(c)
+                            })
+                            .collect::<Vec<_>>();
+                        if lazy && !classes.contains(&"lazyloaded") {
+                            classes.push("lazyloaded");
+                        }
+                        el.set_attribute("class", &classes.join(" "))?;
+                    }
+                    Ok(())
+                }),
                 element!(".block-product-list[id]", move |el| {
                     if el
                         .get_attribute("id")
@@ -106,6 +153,9 @@ pub fn prepare(html: &str, document: &Html) -> Result<String> {
                 }),
                 element!("button.block-header__hamburger-menu", move |el| {
                     if has_menu {
+                        let toggle = format!("zim-site-menu-toggle-{menu_index}");
+                        menu_index += 1;
+                        let replacement = format!("<div class=\"zim-site-menu\"><input class=\"zim-menu-toggle\" id=\"{toggle}\" type=\"checkbox\" aria-label=\"Site menu\"><label for=\"{toggle}\">Menu</label><nav aria-label=\"Site pages\">{links}</nav></div>");
                         el.replace(&replacement, lol_html::html_content::ContentType::Html);
                     }
                     Ok(())

@@ -1032,6 +1032,13 @@ export class BrowserEngine {
       );
     const output = `archive-r${job.archive_revision || 0}.zim`,
       file = await syncFile(dir, output);
+    const rootPage =
+      job.archive_template === "website" && job.config.kind === "website"
+        ? job.entries.find(
+            (e) => e.url === job.config.url && e.selected && !e.media,
+          )
+        : undefined;
+    const mainPath = rootPage ? `${rootPage.id}.html` : "index.html";
     try {
       job.output_bytes = await writeZim(
         file,
@@ -1053,6 +1060,7 @@ export class BrowserEngine {
           job.updated_at = now();
           await this.save(job, false);
         },
+        mainPath,
       );
       job.validation = await verifyZim(
         file,
@@ -1069,6 +1077,7 @@ export class BrowserEngine {
           };
           await this.save(job, false);
         },
+        mainPath,
       );
     } finally {
       file.close();

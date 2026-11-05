@@ -1,6 +1,6 @@
 {
   "name": "zim-studio",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "private": true,
   "type": "module",
   "scripts": {
@@ -14,7 +14,7 @@
     "worker": "cargo run -p zim-worker",
     "test": "cargo test -p zim-engine -p zim-worker",
     "test:e2e": "playwright test",
-    "test:browser": "npm run extension:build && npm run web:build && playwright test tests/browser-extension.spec.ts tests/browser-imports.spec.ts tests/caption-playback.spec.ts tests/snapshot.spec.ts tests/embedded-playback.spec.ts tests/javascript-capture.spec.ts",
+    "test:browser": "npm run extension:build && npm run web:build && playwright test tests/browser-extension.spec.ts tests/browser-imports.spec.ts tests/caption-playback.spec.ts tests/snapshot.spec.ts tests/embedded-playback.spec.ts tests/javascript-capture.spec.ts tests/website-template.spec.ts",
     "dev:api": "cargo run -p zim-worker",
     "ios": "node scripts/mobile.mjs ios",
     "android": "node scripts/mobile.mjs android",

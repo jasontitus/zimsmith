@@ -4,6 +4,75 @@ import { createServer } from "node:http";
 import { buildSync } from "esbuild";
 
 const script = await readFile("crates/engine/assets/render.js", "utf8");
+for (const status of [200, 429]) {
+  test(`completed catalogs skip stalled images but still await API responses (${status})`, async ({
+    page,
+  }) => {
+    const server = createServer((req, res) => {
+      if (req.url === "/slow-image") return;
+      if (req.url === "/data") {
+        setTimeout(() => {
+          if (res.destroyed) return;
+          res.writeHead(status, {
+            "Content-Type": "application/json",
+            "Retry-After": "7",
+          });
+          res.end(JSON.stringify(["Orchid", "Fern"]));
+        }, 4000);
+        return;
+      }
+      res.setHeader("Content-Type", "text/html");
+      res.end(
+        `<title>Slow image catalog</title><img src="/slow-image"><main><div class="block-product-list" id="catalog"><p class="product-list__total-count">2 products</p><div class="product-list__content"><a class="product-list__link" href="/placeholder">Placeholder</a></div></div></main><script>fetch('/data').then(r=>{if(r.ok)return r.json();throw Error('Rate limited')}).then(items=>document.querySelector('.product-list__content').innerHTML=items.map(name=>'<a class="product-list__link" href="/product/'+name+'">'+name+'</a>').join('')).catch(()=>{});</script>`,
+      );
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    const address = server.address();
+    if (!address || typeof address === "string")
+      throw new Error("No fixture port");
+    try {
+      await page.addInitScript({
+        content: `window.__zimsmithRenderOptions={timeout_secs:15};\n${script}`,
+      });
+      await page.goto(`http://127.0.0.1:${address.port}/`, {
+        waitUntil: "domcontentloaded",
+      });
+      let result: any;
+      await expect
+        .poll(
+          async () => {
+            result = await page.evaluate(() =>
+              (window as any).__zimsmithCapture.poll(),
+            );
+            return typeof result?.html === "string";
+          },
+          { timeout: 9000, intervals: [200] },
+        )
+        .toBe(true);
+      expect(await page.evaluate(() => document.readyState)).toBe(
+        "interactive",
+      );
+      if (status === 429) {
+        expect(result.rate_limit).toMatchObject({
+          status: 429,
+          retry_after: "7",
+        });
+      } else {
+        expect(result.settled).toBe(true);
+        expect(result.html).toContain("Orchid");
+        expect(result.html).toContain("Fern");
+        expect(result.html).toContain("2 products captured");
+        expect(result.html).not.toContain("Placeholder");
+        expect(result.html).toContain("/slow-image");
+      }
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+}
 test("real React hydration and accessible list pagination work without site-specific markup", async ({
   page,
 }) => {

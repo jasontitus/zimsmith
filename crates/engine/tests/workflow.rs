@@ -29,6 +29,57 @@ fn config(url: String) -> NewJob {
 }
 
 #[tokio::test]
+async fn original_website_starts_at_the_root_keeps_contents_and_rebuilds_offline() {
+    let app = Router::new()
+        .route("/robots.txt", get(|| async { "User-agent: *\nAllow: /\n" }))
+        .route("/", get(|| async { Html("<html><head><title>Original home</title></head><body><h1>Original home</h1><a href='/child'>Visit child</a><div class='product-carousel__image-wrapper'><template><img class='ecommerce-product-image ecommerce-product-image--loading' src='/photo.svg'></template></div></body></html>") }))
+        .route("/child", get(|| async { Html("<html><title>Child page</title><body><a href='/'>Home</a></body></html>") }))
+        .route("/photo.svg", get(|| async { ([("Content-Type", "image/svg+xml")], "<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20'/>") }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let temp = tempfile::tempdir().unwrap();
+    let engine = Engine::open(temp.path()).await.unwrap();
+    engine
+        .update_settings(Settings {
+            archive_template: ArchiveTemplate::Website,
+            ..Settings::default()
+        })
+        .await
+        .unwrap();
+    let started = engine.create(config(url.clone())).await.unwrap();
+    let job = wait(&engine, &started.id, "completed").await;
+    let root = job.entries.iter().find(|e| e.url == url).unwrap();
+    let child = job
+        .entries
+        .iter()
+        .find(|e| e.url.ends_with("/child"))
+        .unwrap();
+    let archive = zimru::Archive::open(job.output.as_ref().unwrap()).unwrap();
+    assert_eq!(archive.main_path().unwrap(), format!("{}.html", root.id));
+    let html = archive.get_text(&archive.main_path().unwrap()).unwrap();
+    assert!(html.contains(&format!("{}.html", child.id)));
+    assert!(!html.contains("zim-archive-nav"));
+    assert!(!html.contains("ecommerce-product-image--loading"));
+    assert!(!html.contains("<template"));
+    assert!(html.contains("zim-static-product-image"));
+    assert!(archive
+        .get_text("index.html")
+        .unwrap()
+        .contains("search.js"));
+    let requests = job.requests;
+    drop(archive);
+    server.abort();
+    engine
+        .rebuild(&job.id, ArchiveTemplate::Website)
+        .await
+        .unwrap();
+    let rebuilt = wait(&engine, &job.id, "completed").await;
+    assert_eq!(rebuilt.requests, requests);
+    assert!(rebuilt.validation.unwrap().checksum_verified);
+}
+
+#[tokio::test]
 async fn sitemap_lazy_images_and_embedded_video_review_work_together() {
     let images = Arc::new(AtomicUsize::new(0));
     let sitemap_hits = Arc::new(AtomicUsize::new(0));

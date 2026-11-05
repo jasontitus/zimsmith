@@ -26,7 +26,7 @@ fn main() -> anyhow::Result<()> {
     std::fs::write(
         output,
         serde_json::to_string_pretty(
-            &serde_json::json!({"catalog":templates::catalog(), "shells":shells}),
+            &serde_json::json!({"catalog":templates::catalog(), "shells":shells, "website_preview_body":templates::WEBSITE_PREVIEW_BODY}),
         )?,
     )?;
     Ok(())

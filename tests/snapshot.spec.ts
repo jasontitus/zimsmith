@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { readFile } from "node:fs/promises";
 import { DOMParser } from "linkedom/worker";
 import { staticPresentation } from "../src/browser/snapshot";
 import { rewriteCss } from "../src/browser/css";
@@ -111,16 +112,51 @@ test("static snapshots show reveal animations and provide a script-free mobile m
   expect(emptyStore.textContent).toContain("Store catalog not captured");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.setContent(doc.documentElement.outerHTML);
+  await page.addStyleTag({
+    content: await readFile("crates/engine/assets/archive.css", "utf8"),
+  });
   await expect(page.locator("section")).toHaveCSS("opacity", "1");
   await expect(
     page.getByRole("heading", { name: "Saved gallery" }),
   ).toBeVisible();
-  await page.getByText("Menu", { exact: true }).click();
-  await expect(page.locator("details")).toHaveAttribute("open", "");
+  // Readers may expand all article <details>; navigation must remain closed.
+  await page.evaluate(() =>
+    document.querySelectorAll("details").forEach((node) => (node.open = true)),
+  );
+  await expect(
+    page.getByRole("navigation", { name: "Site pages" }),
+  ).toBeHidden();
+  await page.getByRole("checkbox", { name: "Site menu", exact: true }).check();
+  await expect(
+    page.getByRole("navigation", { name: "Site pages" }),
+  ).toBeVisible();
   await expect(
     page.getByRole("link", { name: "About", exact: true }),
   ).toBeVisible();
   await expect(
     page.getByRole("link", { name: "Watch video online ↗" }),
   ).toHaveAttribute("href", "https://youtu.be/abcdefghijk");
+});
+
+test("saved product and lazy images become visible without removing unrelated classes", async ({
+  page,
+}) => {
+  const doc = new DOMParser().parseFromString(
+    `<html><head><style>.ecommerce-product-image--loading,.lazyloading{visibility:hidden}.unrelated{display:none}.product-carousel__image-wrapper{height:0;overflow:hidden}</style></head><body><div class="product-carousel__image-wrapper"><template><img alt="Saved product" class="ecommerce-product-image ecommerce-product-image--loading" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Crect width='20' height='20' fill='red'/%3E%3C/svg%3E"></template></div><img alt="Lazy photo" class="photo lazyloading" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'/%3E"><div class="unrelated">Keep hidden</div></body></html>`,
+    "text/html",
+  ) as unknown as Document;
+  staticPresentation(doc);
+  await page.setContent(doc.documentElement.outerHTML);
+  await page.addStyleTag({
+    content: await readFile("crates/engine/assets/archive.css", "utf8"),
+  });
+  await expect(page.getByAltText("Saved product")).toBeVisible();
+  expect(
+    await page
+      .getByAltText("Saved product")
+      .evaluate((el) => el.parentElement!.getBoundingClientRect().height),
+  ).toBeGreaterThan(0);
+  await expect(page.getByAltText("Lazy photo")).toBeVisible();
+  await expect(page.getByAltText("Lazy photo")).toHaveClass("photo lazyloaded");
+  await expect(page.getByText("Keep hidden")).toBeHidden();
 });

@@ -59,6 +59,7 @@ export function discover(html: string, source: string) {
     ) || source;
   prepareImages(document);
   staticPresentation(document);
+  prepareImages(document);
   clean(document);
   const links = Array.from(document.querySelectorAll("a[href]"), (a) =>
     resolveUrl(a.getAttribute("href")!, base),
@@ -95,6 +96,7 @@ export async function rewritePage(
     ) || entry.url;
   prepareImages(document);
   staticPresentation(document);
+  prepareImages(document);
   clean(document);
   const selected = new Map(
     job.entries.filter((e) => e.selected).map((e) => [e.url, `${e.id}.html`]),
@@ -166,6 +168,13 @@ export async function rewritePage(
   nav.innerHTML = job.import
     ? `<a href="index.html">← Collection contents</a><span>Imported saved content</span>`
     : `<a href="index.html">← Collection contents</a><span>Saved for offline reading</span><a href="${escape(entry.url)}" rel="noopener noreferrer">Original source ↗</a>`;
-  document.body.prepend(nav);
+  if (job.archive_template !== "website") document.body.prepend(nav);
+  else {
+    const footer = document.createElement("footer");
+    footer.className = "zim-site-footer";
+    footer.innerHTML =
+      '<a href="index.html">Search &amp; collection contents</a>';
+    document.body.append(footer);
+  }
   return "<!doctype html>" + document.documentElement.outerHTML;
 }

@@ -11,7 +11,7 @@ Turn websites and media collections into searchable offline [ZIM archives](https
 - Refresh collections; control URL scope, asset types, download budgets, and video quality.
 - Save YouTube captions, search transcripts, and jump to playback timestamps.
 - Import saved pages, media, folders, ZIPs, or website URL lists.
-- Build searchable ZIMs in four styles, with capture and validation reports.
+- Build searchable ZIMs with reading, video gallery, or original website layouts.
 - Save/open archives and delete failed attempts.
 
 ## Use it
@@ -30,7 +30,7 @@ Change an existing archive’s style with **Details → Rebuild ZIM**. For older
 | Desktop Chromium extension          | Website crawling after granting site access; direct media links |
 | Browser                             | Sites that allow CORS; direct media links                       |
 
-YouTube uses the [TeamPiped RustyPipe fork](https://github.com/TeamPiped/rustypipe). Desktop can optionally use yt-dlp for additional sites. Browser/extension builds do not yet extract YouTube collections. Website capture supports server-rendered HTML; authenticated apps, DRM, and live streams are unsupported.
+YouTube uses the [TeamPiped RustyPipe fork](https://github.com/TeamPiped/rustypipe). Desktop can optionally use yt-dlp for additional sites. Browser/extension builds do not yet extract YouTube collections. Installed apps can render JavaScript pages; authenticated apps, DRM, and live streams are unsupported.
 
 ## Build
 

@@ -4,6 +4,7 @@ import WebKit
 
 struct RenderRequestArgs: Decodable {
     let id: String
+    let session_id: String?
     let url: String
     let delay_ms: UInt64
     let timeout_secs: UInt64
@@ -13,8 +14,17 @@ struct RenderRequestArgs: Decodable {
 struct RenderPageArgs: Decodable { let request: RenderRequestArgs; let script: String }
 struct CancelRenderArgs: Decodable { let id: String }
 
+// Only one crawl's temporary browser cache is retained. It never uses Safari's data.
+final class PageCaptureSession {
+    let id: String
+    let dataStore = WKWebsiteDataStore.nonPersistent()
+    var mediaRules: WKContentRuleList?
+    init(id: String) { self.id = id }
+}
+
 final class PageCapture: NSObject, WKNavigationDelegate, WKUIDelegate {
     private let args: RenderPageArgs
+    private let session: PageCaptureSession
     private let success: ([String: Any]) -> Void
     private let failure: (String) -> Void
     private let complete: (String) -> Void
@@ -24,14 +34,14 @@ final class PageCapture: NSObject, WKNavigationDelegate, WKUIDelegate {
     private var evaluating = false
     private(set) var progress: [String: Any]?
 
-    init(_ args: RenderPageArgs, success: @escaping ([String: Any]) -> Void, failure: @escaping (String) -> Void, complete: @escaping (String) -> Void) {
-        self.args = args; self.success = success; self.failure = failure; self.complete = complete
+    init(_ args: RenderPageArgs, session: PageCaptureSession? = nil, success: @escaping ([String: Any]) -> Void, failure: @escaping (String) -> Void, complete: @escaping (String) -> Void) {
+        self.args = args; self.session = session ?? PageCaptureSession(id: args.request.id)
+        self.success = success; self.failure = failure; self.complete = complete
     }
     func start(in host: UIView) {
         guard let url = URL(string: args.request.url), allowed(url) else { fail("Invalid page capture URL"); return }
         let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .nonPersistent()
-        configuration.processPool = WKProcessPool()
+        configuration.websiteDataStore = session.dataStore
         configuration.allowsInlineMediaPlayback = true
         configuration.mediaTypesRequiringUserActionForPlayback = .all
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
@@ -46,15 +56,22 @@ final class PageCapture: NSObject, WKNavigationDelegate, WKUIDelegate {
         host.insertSubview(browser, at: 0)
         view = browser
         let rules = "[{\"trigger\":{\"url-filter\":\".*\",\"resource-type\":[\"media\"]},\"action\":{\"type\":\"block\"}}]"
-        WKContentRuleListStore.default().compileContentRuleList(forIdentifier: "ZimsmithCaptureNoMedia", encodedContentRuleList: rules) { [weak self] list, error in
+        let load: (WKContentRuleList) -> Void = { [weak self] list in
             guard let self = self, !self.finished else { return }
-            guard let list = list else { self.fail(error?.localizedDescription ?? "Could not disable browser media downloads"); return }
+            self.session.mediaRules = list
             browser.configuration.userContentController.add(list)
             browser.load(URLRequest(url: url, timeoutInterval: Double(self.args.request.timeout_secs)))
             let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in self?.poll() }
             self.timer = timer
             // Scrolling the main app must not suspend page-capture polling.
             RunLoop.main.add(timer, forMode: .common)
+        }
+        if let list = session.mediaRules { load(list) }
+        else {
+            WKContentRuleListStore.default().compileContentRuleList(forIdentifier: "ZimsmithCaptureNoMedia", encodedContentRuleList: rules) { [weak self] list, error in
+                guard let list = list else { self?.fail(error?.localizedDescription ?? "Could not disable browser media downloads"); return }
+                load(list)
+            }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + Double(args.request.timeout_secs) + 5) { [weak self] in self?.fail("Browser rendering timed out. Increase its timeout or retry.") }
     }
