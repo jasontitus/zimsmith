@@ -38,6 +38,7 @@ import {
 import { CaptureReport } from "./CaptureReport";
 import { SavedContentImport } from "./SavedContentImport";
 import { CaptureSettings } from "./CaptureSettings";
+import { NumberInput } from "./NumberInput";
 import { normalizedCapture, captureOptions } from "./capture";
 import { AndroidUpdates } from "./AndroidUpdates";
 import {
@@ -90,6 +91,7 @@ const defaultSettings: Settings = {
   auto_start_item_limit: 100,
   archive_template: "atlas",
   zstd_level: 3,
+  cdn_parallel_requests: 3,
 };
 const labels: Record<string, string> = {
   importing: "Importing saved files",
@@ -315,7 +317,13 @@ export default function App() {
           );
         }
       }
-      if (editingJobId) setToast("Crawl settings saved. Retrying.");
+      if (editingJobId) {
+        setToast(
+          result.config.delay_ms === job?.config.delay_ms
+            ? "Crawl settings saved. Retrying."
+            : `Crawl settings saved. Page request delay is now ${result.config.delay_ms / 1000} seconds.`,
+        );
+      }
       setConfig(normalized);
       openJob(result);
     });
@@ -345,7 +353,7 @@ export default function App() {
     }
   };
   const saveSettings = (
-    section: "downloads" | "appearance" | "compression" = "downloads",
+    section: "downloads" | "appearance" | "compression" | "cdn" = "downloads",
   ) =>
     action(async () => {
       if (!settings) return;
@@ -354,10 +362,16 @@ export default function App() {
           ? { archive_template: settingsDraft.archive_template }
           : section === "compression"
             ? { zstd_level: settingsDraft.zstd_level }
-            : {
-                auto_start_small_jobs: settingsDraft.auto_start_small_jobs,
-                auto_start_item_limit: settingsDraft.auto_start_item_limit,
-              };
+            : section === "cdn"
+              ? { cdn_parallel_requests: settingsDraft.cdn_parallel_requests }
+              : {
+                  auto_start_small_jobs: settingsDraft.auto_start_small_jobs,
+                  auto_start_item_limit:
+                    !settingsDraft.auto_start_small_jobs &&
+                    !Number.isFinite(settingsDraft.auto_start_item_limit)
+                      ? settings.auto_start_item_limit
+                      : settingsDraft.auto_start_item_limit,
+                };
       const saved = await api.updateSettings({ ...settings, ...changes });
       setSettings(saved);
       setSettingsDraft((previous) => ({ ...previous, ...changes }));
@@ -366,7 +380,9 @@ export default function App() {
           ? "Archive style saved. Applies to new jobs."
           : section === "compression"
             ? "Compression preference saved. Applies to new jobs and rebuilds."
-            : "Download preferences saved. Applies to new jobs.",
+            : section === "cdn"
+              ? "CDN preference saved. Applies when downloads start or resume."
+              : "Download preferences saved. Applies to new jobs.",
       );
     });
   const visibleJobs = jobs.filter((j) =>
@@ -722,14 +738,13 @@ export default function App() {
                         <label htmlFor="limit">
                           Scan limit <span className="optional">items</span>
                         </label>
-                        <input
+                        <NumberInput
                           id="limit"
-                          type="number"
                           min={1}
                           max={5000}
                           required
                           value={config.max_items}
-                          onChange={(e) => update("max_items", +e.target.value)}
+                          onValueChange={(value) => update("max_items", value)}
                         />
                       </div>
                     </div>
@@ -787,51 +802,56 @@ export default function App() {
                         <div className="form-grid">
                           <div>
                             <label htmlFor="depth">Link depth</label>
-                            <input
+                            <NumberInput
                               id="depth"
-                              type="number"
                               min={0}
                               max={20}
+                              required
                               value={config.max_depth}
-                              onChange={(e) =>
-                                update("max_depth", +e.target.value)
+                              onValueChange={(value) =>
+                                update("max_depth", value)
                               }
                             />
                           </div>
                           <div>
                             <label htmlFor="delay">
-                              Request spacing (seconds)
+                              Delay between page requests (seconds)
                             </label>
-                            <input
+                            <NumberInput
                               id="delay"
                               aria-describedby="delay-help"
-                              type="number"
                               min={1}
                               max={60}
                               step={0.5}
+                              required
                               value={config.delay_ms / 1000}
-                              onChange={(e) =>
-                                update("delay_ms", +e.target.value * 1000)
+                              onValueChange={(value) =>
+                                update("delay_ms", value * 1000)
                               }
                             />
                             <p id="delay-help" className="settings-note">
-                              Pages and ordinary hosts use this delay. Known
-                              static CDNs skip it; known robots rules and rate
-                              limits still apply.
+                              Pages and ordinary hosts wait at least this long
+                              between requests.{" "}
+                              {!browserOnly && (
+                                <>
+                                  To set how many CDN files can download at
+                                  once, use Settings → CDN downloads.
+                                </>
+                              )}
                             </p>
                           </div>
                           <div>
                             <label htmlFor="resource-limit">
                               Maximum file size (MB)
                             </label>
-                            <input
+                            <NumberInput
                               id="resource-limit"
-                              type="number"
                               min={1}
                               max={1024}
+                              required
                               value={config.max_resource_mb}
-                              onChange={(e) =>
-                                update("max_resource_mb", +e.target.value)
+                              onValueChange={(value) =>
+                                update("max_resource_mb", value)
                               }
                             />
                           </div>
@@ -1618,7 +1638,7 @@ export default function App() {
                   icon={<ArrowDown size={20} />}
                 />
                 <Stat
-                  title="Page request spacing"
+                  title="Page request delay"
                   value={`${job.config.delay_ms / 1000}s minimum`}
                   icon={<ShieldCheck size={20} />}
                 />
@@ -1905,20 +1925,19 @@ export default function App() {
                           levels use more time and memory. The default is 3.
                         </p>
                       </div>
-                      <input
+                      <NumberInput
                         id="zstd-level"
                         className="threshold-input"
-                        type="number"
                         min={1}
                         max={22}
                         step={1}
                         required
                         disabled={!settings || busy}
                         value={settingsDraft.zstd_level}
-                        onChange={(event) =>
+                        onValueChange={(value) =>
                           setSettingsDraft((previous) => ({
                             ...previous,
-                            zstd_level: +event.target.value,
+                            zstd_level: value,
                           }))
                         }
                       />
@@ -1940,6 +1959,60 @@ export default function App() {
                   </form>
                 )}
               </section>
+              {!browserOnly && (
+                <section className="card settings-card">
+                  <h2>CDN downloads</h2>
+                  <form
+                    className="preferences-form"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void saveSettings("cdn");
+                    }}
+                  >
+                    <div className="setting-row">
+                      <div>
+                        <label htmlFor="cdn-parallel-requests">
+                          Parallel CDN requests
+                        </label>
+                        <p>
+                          Download 1–6 linked images, fonts, or stylesheets at a
+                          time from a recognized CDN. Default: 3. Page delays,
+                          download budgets, and server cooldowns still apply.
+                        </p>
+                      </div>
+                      <NumberInput
+                        id="cdn-parallel-requests"
+                        className="threshold-input"
+                        min={1}
+                        max={6}
+                        step={1}
+                        required
+                        disabled={!settings || busy}
+                        value={settingsDraft.cdn_parallel_requests}
+                        onValueChange={(value) =>
+                          setSettingsDraft((previous) => ({
+                            ...previous,
+                            cdn_parallel_requests: value,
+                          }))
+                        }
+                      />
+                    </div>
+                    <p className="settings-note">
+                      Applies when downloads start or resume. Choose 1 to fetch
+                      one file at a time.
+                    </p>
+                    <div className="preferences-actions">
+                      <button
+                        type="submit"
+                        className="button primary"
+                        disabled={!settings || busy}
+                      >
+                        <Check size={16} /> Save CDN preference
+                      </button>
+                    </div>
+                  </form>
+                </section>
+              )}
               <section className="card settings-card download-preferences">
                 <h2>Download confirmation</h2>
                 <form
@@ -1982,10 +2055,9 @@ export default function App() {
                         count as items; linked assets are additional.
                       </p>
                     </div>
-                    <input
+                    <NumberInput
                       id="auto-start-limit"
                       className="threshold-input"
-                      type="number"
                       min={1}
                       max={5000}
                       step={1}
@@ -1996,10 +2068,10 @@ export default function App() {
                         busy ||
                         !settingsDraft.auto_start_small_jobs
                       }
-                      onChange={(e) =>
+                      onValueChange={(value) =>
                         setSettingsDraft((previous) => ({
                           ...previous,
-                          auto_start_item_limit: +e.target.value,
+                          auto_start_item_limit: value,
                         }))
                       }
                     />
@@ -2193,7 +2265,7 @@ export default function App() {
                 <dd>{job.config.max_resource_mb} MB</dd>
               </div>
               <div>
-                <dt>Page request spacing</dt>
+                <dt>Page request delay</dt>
                 <dd>{job.config.delay_ms / 1000} seconds</dd>
               </div>
             </dl>

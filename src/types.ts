@@ -11,6 +11,7 @@ export interface Settings {
   auto_start_item_limit: number;
   archive_template: ArchiveTemplate;
   zstd_level: number;
+  cdn_parallel_requests: number;
 }
 export interface CaptureOptions {
   auto_render_javascript: boolean;
@@ -130,6 +131,8 @@ export interface Job {
     unit: string;
     received: number;
     expected: number | null;
+    active_asset_requests?: number | null;
+    peak_asset_requests?: number | null;
     updated_at: number;
   };
 }

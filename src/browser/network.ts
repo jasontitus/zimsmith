@@ -5,7 +5,9 @@ import { readFile, Store, syncFile } from "./storage";
 import { requestDelay } from "./pacing";
 
 interface Host {
+  // Cooldown deadline. Older saved hosts also used this for ordinary pacing.
   next: number;
+  lastRequest?: number;
   robots?: string;
   robots_at?: number;
 }
@@ -67,9 +69,15 @@ export class Network {
         throw new Error(
           "Download budget reached. Increase the budget in Edit crawl to continue.",
         );
-      await this.wait(Math.max(host.next, (this.job.retry_at || 0) * 1000));
+      await this.wait(
+        Math.max(
+          host.next,
+          (host.lastRequest || 0) + delay,
+          (this.job.retry_at || 0) * 1000,
+        ),
+      );
       this.job.retry_at = null;
-      host.next = Date.now() + delay;
+      host.lastRequest = Date.now();
       await this.store.put("hosts", origin, host);
       this.job.requests++;
       this.job.updated_at = now();

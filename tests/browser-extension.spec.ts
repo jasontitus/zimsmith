@@ -182,7 +182,7 @@ test("extension crawls without CORS, pauses through 429/reload, and exports/rebu
       .getByRole("button", { name: "Crawl & archive settings", exact: true })
       .click();
     await page
-      .getByLabel("Request spacing (seconds)", { exact: true })
+      .getByLabel("Delay between page requests (seconds)", { exact: true })
       .fill("1");
     await page
       .getByRole("button", { name: "Scan source", exact: true })
@@ -577,7 +577,7 @@ test("CDN fonts skip the page delay while preserving declared delays and 429 bac
       .getByRole("button", { name: "Crawl & archive settings", exact: true })
       .click();
     await page
-      .getByLabel("Request spacing (seconds)", { exact: true })
+      .getByLabel("Delay between page requests (seconds)", { exact: true })
       .fill("4");
     await page
       .getByRole("button", { name: "Scan source", exact: true })

@@ -31,6 +31,13 @@ pub struct Settings {
     pub auto_start_item_limit: usize,
     pub archive_template: ArchiveTemplate,
     pub zstd_level: i32,
+    pub cdn_parallel_requests: usize,
+}
+
+pub const MAX_CDN_PARALLEL_REQUESTS: usize = 6;
+
+pub const fn default_cdn_parallel_requests() -> usize {
+    3
 }
 
 pub fn default_zstd_level() -> i32 {
@@ -44,12 +51,17 @@ impl Default for Settings {
             auto_start_item_limit: 100,
             archive_template: ArchiveTemplate::Atlas,
             zstd_level: default_zstd_level(),
+            cdn_parallel_requests: default_cdn_parallel_requests(),
         }
     }
 }
 
 impl Settings {
     pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            (1..=MAX_CDN_PARALLEL_REQUESTS).contains(&self.cdn_parallel_requests),
+            "Parallel CDN requests must be 1–{MAX_CDN_PARALLEL_REQUESTS}"
+        );
         anyhow::ensure!(
             (1..=22).contains(&self.zstd_level),
             "Zstandard compression level must be 1–22"
@@ -212,6 +224,8 @@ pub struct Progress {
     pub unit: String,
     pub received: u64,
     pub expected: Option<u64>,
+    pub active_asset_requests: Option<usize>,
+    pub peak_asset_requests: Option<usize>,
     pub updated_at: u64,
 }
 
@@ -482,7 +496,23 @@ mod tests {
     fn legacy_preferences_and_job_manifests_keep_level_three() {
         let settings: Settings = serde_json::from_str("{}").unwrap();
         assert_eq!(settings.zstd_level, 3);
+        assert_eq!(settings.cdn_parallel_requests, 3);
         assert_eq!(completed().zstd_level, 3);
+    }
+
+    #[test]
+    fn cdn_preferences_accept_only_the_supported_range() {
+        for cdn_parallel_requests in [0, 1, 3, 6, 7] {
+            assert_eq!(
+                Settings {
+                    cdn_parallel_requests,
+                    ..Default::default()
+                }
+                .validate()
+                .is_ok(),
+                (1..=6).contains(&cdn_parallel_requests)
+            );
+        }
     }
     #[test]
     fn compression_preferences_accept_supported_levels_and_reject_invalid_values() {

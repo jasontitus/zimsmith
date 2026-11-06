@@ -25,6 +25,16 @@ export function captureOptions(config: Config): CaptureOptions {
 }
 export function normalizedCapture(config: Config): CaptureOptions {
   const value = captureOptions(config);
+  // Advanced fields may be unmounted when a crawl or import is submitted.
+  for (const [number, label] of [
+    [config.max_items, "a scan limit"],
+    [config.max_depth, "a link depth"],
+    [config.delay_ms, "a delay between page requests"],
+    [config.max_resource_mb, "a maximum file size"],
+    [value.render_timeout_secs, "a rendering timeout"],
+  ] as const) {
+    if (!Number.isFinite(number)) throw new Error(`Enter ${label}.`);
+  }
   return {
     ...value,
     include_urls: value.include_urls.map((s) => s.trim()).filter(Boolean),

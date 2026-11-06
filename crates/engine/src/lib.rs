@@ -28,7 +28,7 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
 };
@@ -40,10 +40,23 @@ pub struct Record {
     pub stop: Notify,
     pub running: AtomicBool,
     pub import_cancel: AtomicBool,
+    pub active_asset_requests: AtomicUsize,
+    pub peak_asset_requests: AtomicUsize,
     pub dir: PathBuf,
 }
 
 impl Record {
+    async fn snapshot(&self) -> Job {
+        let mut job = self.job.lock().await.clone();
+        if job.progress.active_asset_requests.is_some() {
+            job.progress.active_asset_requests =
+                Some(self.active_asset_requests.load(Ordering::Relaxed));
+            job.progress.peak_asset_requests =
+                Some(self.peak_asset_requests.load(Ordering::Relaxed));
+        }
+        job
+    }
+
     /// Frequent UI updates stay in memory; normal job checkpoints persist the
     /// latest snapshot without rewriting the entire manifest for each chunk.
     pub async fn progress(
@@ -149,6 +162,8 @@ impl Engine {
                 stop: Notify::new(),
                 running: AtomicBool::new(false),
                 import_cancel: AtomicBool::new(false),
+                active_asset_requests: AtomicUsize::new(0),
+                peak_asset_requests: AtomicUsize::new(0),
                 dir: dir.path(),
             });
             record.save(&job).await?;
@@ -160,7 +175,7 @@ impl Engine {
         let records: Vec<_> = self.jobs.read().await.values().cloned().collect();
         let mut jobs = Vec::new();
         for record in records {
-            jobs.push(record.job.lock().await.clone());
+            jobs.push(record.snapshot().await);
         }
         jobs.sort_by_key(|j| std::cmp::Reverse(j.created_at));
         jobs
@@ -174,7 +189,7 @@ impl Engine {
             .context("Job not found")
     }
     pub async fn get(&self, id: &str) -> Result<Job> {
-        Ok(self.record(id).await?.job.lock().await.clone())
+        Ok(self.record(id).await?.snapshot().await)
     }
     pub async fn settings(&self) -> Settings {
         self.settings.read().await.clone()
@@ -256,6 +271,8 @@ impl Engine {
             stop: Notify::new(),
             running: AtomicBool::new(false),
             import_cancel: AtomicBool::new(false),
+            active_asset_requests: AtomicUsize::new(0),
+            peak_asset_requests: AtomicUsize::new(0),
             dir,
         });
         record.save(&job).await?;
@@ -270,6 +287,7 @@ impl Engine {
             !record.running.swap(true, Ordering::SeqCst),
             "Job is still pausing; try again shortly"
         );
+        let settings = self.settings.clone();
         tokio::spawn(async move {
             let stop = record.stop.notified();
             tokio::pin!(stop);
@@ -282,7 +300,7 @@ impl Engine {
             let result = tokio::select! {
                 biased;
                 _ = &mut stop => Ok(()),
-                result = drive(&record) => result,
+                result = drive(&record, &settings) => result,
             };
             if let Err(error) = result {
                 let message = format!("{error:#}");
@@ -725,7 +743,7 @@ impl Engine {
     }
 }
 
-async fn drive(record: &Record) -> Result<()> {
+async fn drive(record: &Record, settings: &RwLock<Settings>) -> Result<()> {
     let job = record.job.lock().await.clone();
     if job.phase == "scan" {
         record
@@ -774,7 +792,8 @@ async fn drive(record: &Record) -> Result<()> {
         if phase == "download" {
             match job.config.kind {
                 SourceKind::Website => {
-                    web::download(record).await?;
+                    let parallel_requests = settings.read().await.cdn_parallel_requests;
+                    web::download(record, parallel_requests).await?;
                     if record
                         .job
                         .lock()

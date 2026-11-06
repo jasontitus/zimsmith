@@ -29,6 +29,9 @@ test("compression preference persists, validates its range, and preserves other 
         ),
       ).toBe(false);
     }
+    await level.fill("0");
+    await level.press("Backspace");
+    await expect(level).toHaveValue("");
     await level.fill("9");
     const otherStyle =
       previous.archive_template === "midnight" ? "Atlas" : "Midnight";

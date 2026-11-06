@@ -191,6 +191,9 @@ export class BrowserEngine {
           !Number.isInteger(settings.zstd_level) ||
           settings.zstd_level < 1 ||
           settings.zstd_level > 22 ||
+          !Number.isInteger(settings.cdn_parallel_requests) ||
+          settings.cdn_parallel_requests < 1 ||
+          settings.cdn_parallel_requests > 6 ||
           !templates.some((t) => t.id === settings.archive_template)
         )
           throw new Error("Invalid archive preferences.");

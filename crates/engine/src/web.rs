@@ -1,19 +1,33 @@
 use crate::{model::*, Record};
 use anyhow::{bail, Context, Result};
+use futures_util::{stream::FuturesUnordered, StreamExt};
 use reqwest::{Client, StatusCode};
 use scraper::{Html, Selector};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, HashMap},
-    sync::{Arc, OnceLock},
+    collections::{BTreeMap, HashMap, HashSet},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, OnceLock,
+    },
     time::{Duration, Instant},
 };
-use tokio::sync::Mutex;
+use tokio::{
+    io::{AsyncSeekExt, AsyncWriteExt},
+    sync::{Mutex, Semaphore},
+};
 use url::Url;
 
 struct HostSlot {
     gate: Mutex<()>,
-    next: Mutex<Instant>,
+    timing: Mutex<HostTiming>,
+    transfers: Semaphore,
+}
+
+#[derive(Default)]
+struct HostTiming {
+    last_activity: Option<Instant>,
+    cooldown_until: Option<Instant>,
 }
 static SLOTS: OnceLock<Mutex<HashMap<String, Arc<HostSlot>>>> = OnceLock::new();
 
@@ -26,7 +40,8 @@ async fn host_slot(url: &Url) -> Arc<HostSlot> {
         .or_insert_with(|| {
             Arc::new(HostSlot {
                 gate: Mutex::new(()),
-                next: Mutex::new(Instant::now()),
+                timing: Mutex::new(HostTiming::default()),
+                transfers: Semaphore::new(MAX_CDN_PARALLEL_REQUESTS),
             })
         })
         .clone()
@@ -190,6 +205,15 @@ fn passive_cdn_asset(url: &Url) -> bool {
             && matches!(path.as_str(), "/css" | "/css2"))
 }
 
+fn passive_cdn_mime(mime: &str) -> bool {
+    mime.starts_with("image/")
+        || mime.starts_with("font/")
+        || mime.starts_with("text/css")
+        || mime.starts_with("application/font")
+        || mime.starts_with("application/x-font")
+        || mime.starts_with("application/vnd.ms-fontobject")
+}
+
 fn host_failure(error: &anyhow::Error) -> bool {
     error.chain().any(|error| {
         error.is::<UnavailablePolicy>()
@@ -200,14 +224,41 @@ fn host_failure(error: &anyhow::Error) -> bool {
     })
 }
 
+struct ActiveAssetRequest<'a>(&'a AtomicUsize);
+
+impl<'a> ActiveAssetRequest<'a> {
+    fn start(record: &'a Record) -> Self {
+        let count = &record.active_asset_requests;
+        let active = count.fetch_add(1, Ordering::Relaxed) + 1;
+        record
+            .peak_asset_requests
+            .fetch_max(active, Ordering::Relaxed);
+        Self(count)
+    }
+}
+
+impl Drop for ActiveAssetRequest<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+#[derive(Default)]
+struct Transfer<'a> {
+    file: Option<&'a mut tokio::fs::File>,
+    batch: bool,
+    validators: Option<(Option<String>, Option<String>)>,
+}
+
 pub struct Network<'a> {
     record: &'a Record,
     client: Client,
     delay: Duration,
     cap: u64,
-    robots: HashMap<String, Policy>,
+    robots: Mutex<HashMap<String, Policy>>,
     robots_timeout: Duration,
-    cdn_notices: std::collections::BTreeSet<String>,
+    cdn_notices: Mutex<std::collections::BTreeSet<String>>,
+    serial: Mutex<()>,
 }
 
 impl<'a> Network<'a> {
@@ -222,13 +273,16 @@ impl<'a> Network<'a> {
                 .build()?,
             delay: Duration::from_millis(job.config.delay_ms),
             cap: job.config.max_resource_mb * 1024 * 1024,
-            robots: HashMap::new(),
+            robots: Mutex::new(HashMap::new()),
             robots_timeout: Duration::from_secs(15),
             cdn_notices: Default::default(),
+            serial: Mutex::new(()),
         })
     }
-    pub fn declared_sitemaps(&self, url: &Url) -> Vec<String> {
+    pub async fn declared_sitemaps(&self, url: &Url) -> Vec<String> {
         self.robots
+            .lock()
+            .await
             .get(&url.origin().ascii_serialization())
             .map(|p| {
                 p.text
@@ -256,16 +310,37 @@ impl<'a> Network<'a> {
         robots: bool,
         asset: bool,
         conditional: reqwest::header::HeaderMap,
+        transfer: &mut Transfer<'_>,
+        parallel: bool,
     ) -> Result<(StatusCode, reqwest::header::HeaderMap, Vec<u8>)> {
         if self.record.remaining_download().await == Some(0) {
             return Err(crate::capture::BudgetReached.into());
         }
-        wait_saved_cooldown(self.record).await?;
-        let attempts = if robots { 1 } else { 5 };
+        let _serial = if parallel {
+            None
+        } else {
+            Some(self.serial.lock().await)
+        };
+        let slot = host_slot(url).await;
+        let attempts = if robots || parallel { 1 } else { 5 };
         for attempt in 0..attempts {
+            wait_saved_cooldown(self.record).await?;
+            let _permit = slot
+                .transfers
+                .acquire_many(if parallel {
+                    1
+                } else {
+                    MAX_CDN_PARALLEL_REQUESTS as u32
+                })
+                .await
+                .expect("open transfer semaphore");
             self.record
                 .change(|j| {
                     j.requests += 1;
+                    if transfer.batch && !robots {
+                        j.progress.label = "Downloading CDN assets".into();
+                        return;
+                    }
                     j.progress.label = if robots {
                         format!("Checking robots.txt: {url} (15s timeout)")
                     } else {
@@ -283,10 +358,12 @@ impl<'a> Network<'a> {
             } else {
                 request
             };
+            let _active = transfer
+                .file
+                .is_some()
+                .then(|| ActiveAssetRequest::start(self.record));
             let response = request.send().await;
-            // Keep bookkeeping or a late scheduler wake from consuming the
-            // next gap. A zero-delay CDN still adds no artificial wait.
-            cooldown(url, delay).await;
+            note_response(url).await;
             match response {
                 Ok(mut response) => {
                     let status = response.status();
@@ -302,7 +379,10 @@ impl<'a> Network<'a> {
                         cooldown(url, wait).await;
                         self.record
                             .change(|j| {
-                                j.retry_at = Some(now() + wait.as_secs() + 1);
+                                j.retry_at =
+                                    Some(j.retry_at.unwrap_or(0).max(
+                                        now().saturating_add(wait.as_secs()).saturating_add(1),
+                                    ));
                                 j.log(
                                     "warning",
                                     format!(
@@ -323,8 +403,6 @@ impl<'a> Network<'a> {
                             }
                             .into());
                         }
-                        tokio::time::sleep(wait).await;
-                        self.record.change(|j| j.retry_at = None).await?;
                         continue;
                     }
                     if asset && status.is_success() {
@@ -338,6 +416,13 @@ impl<'a> Network<'a> {
                             ))
                             .into());
                         }
+                        anyhow::ensure!(
+                            !parallel || passive_cdn_mime(mime) || matches!(mime, "" | "application/octet-stream"),
+                            "The CDN returned {mime} instead of an image, stylesheet or font: {url}"
+                        );
+                    }
+                    if transfer.file.is_some() && !status.is_success() {
+                        return Ok((status, headers, Vec::new()));
                     }
                     if self
                         .record
@@ -354,29 +439,43 @@ impl<'a> Network<'a> {
                         url
                     );
                     let mut body = Vec::new();
+                    let mut received = 0u64;
+                    let mut file = transfer.file.as_deref_mut().filter(|_| status.is_success());
+                    if let Some(file) = file.as_mut() {
+                        file.set_len(0).await?;
+                        file.rewind().await?;
+                    }
                     let total = response.content_length();
-                    self.record.transfer_progress(0, total).await;
+                    if !transfer.batch {
+                        self.record.transfer_progress(0, total).await;
+                    }
                     let mut last_update = std::time::Instant::now();
                     while let Some(chunk) = response.chunk().await? {
                         anyhow::ensure!(
-                            body.len() as u64 + chunk.len() as u64 <= limit,
+                            received + chunk.len() as u64 <= limit,
                             "Resource exceeded size limit: {url}"
                         );
                         self.record.consume_download(chunk.len() as u64).await?;
-                        body.extend_from_slice(&chunk);
-                        if last_update.elapsed() >= Duration::from_millis(500) {
-                            self.record
-                                .transfer_progress(body.len() as u64, total)
-                                .await;
+                        received += chunk.len() as u64;
+                        if let Some(file) = file.as_mut() {
+                            file.write_all(&chunk).await?;
+                        } else {
+                            body.extend_from_slice(&chunk);
+                        }
+                        if !transfer.batch && last_update.elapsed() >= Duration::from_millis(500) {
+                            self.record.transfer_progress(received, total).await;
                             last_update = std::time::Instant::now();
                         }
                     }
-                    self.record
-                        .transfer_progress(body.len() as u64, total)
-                        .await;
+                    if let Some(file) = file {
+                        file.flush().await?;
+                    }
+                    if !transfer.batch {
+                        self.record.transfer_progress(received, total).await;
+                    }
                     self.record
                         .change(|j| {
-                            j.bytes += body.len() as u64;
+                            j.bytes += received;
                         })
                         .await?;
                     return Ok((status, headers, body));
@@ -386,39 +485,42 @@ impl<'a> Network<'a> {
                     let wait = retry_delay(None, attempt);
                     self.record
                         .change(|j| {
-                            j.retry_at = Some(now() + wait.as_secs() + 1);
+                            j.retry_at = Some(
+                                j.retry_at
+                                    .unwrap_or(0)
+                                    .max(now().saturating_add(wait.as_secs()).saturating_add(1)),
+                            );
                             j.log(
                                 "warning",
                                 format!("Connection error. Retrying in {}s: {url}", wait.as_secs()),
                             );
                         })
                         .await?;
-                    tokio::time::sleep(wait).await;
-                    self.record.change(|j| j.retry_at = None).await?;
                 }
             }
         }
         unreachable!()
     }
-    async fn check_robots(&mut self, url: &Url, baseline: Duration) -> Result<Duration> {
+    async fn check_robots(&self, url: &Url, baseline: Duration) -> Result<Duration> {
         use crate::robots_cache::{self, Checkpoint};
         let origin = url.origin().ascii_serialization();
-        if self.robots.contains_key(&origin) {
-            return self.check_robots_uncached(url, baseline).await;
+        let mut robots = self.robots.lock().await;
+        if robots.contains_key(&origin) {
+            return self.check_robots_uncached(url, baseline, &mut robots).await;
         }
         let cached = robots_cache::load(self.record, &origin).await;
         if let Some(cached) = &cached {
             if let Some(text) = &cached.text {
                 let delay = Duration::from_millis(cached.delay_ms);
                 cooldown(url, delay).await;
-                self.robots.insert(
+                robots.insert(
                     origin.clone(),
                     Policy {
                         text: text.clone(),
                         delay,
                     },
                 );
-                return self.check_robots_uncached(url, baseline).await;
+                return self.check_robots_uncached(url, baseline, &mut robots).await;
             }
             if cached.error.is_some() || cached.attempts >= 2 {
                 let message = format!("Cannot safely read {origin}/robots.txt: {}. Retry in {}s, or pause and build with the available files.", cached.error.as_deref().unwrap_or("The previous policy checks were interrupted"), cached.valid_until.saturating_sub(now()));
@@ -445,9 +547,9 @@ impl<'a> Network<'a> {
             },
         )
         .await?;
-        let result = self.check_robots_uncached(url, baseline).await;
+        let result = self.check_robots_uncached(url, baseline, &mut robots).await;
         let passive_fallback = result.as_ref().err().is_some_and(passive_policy_failure);
-        let policy = self.robots.get(&origin);
+        let policy = robots.get(&origin);
         let unavailable = policy.is_none();
         robots_cache::save(
             self.record,
@@ -479,9 +581,14 @@ impl<'a> Network<'a> {
         })
     }
 
-    async fn check_robots_uncached(&mut self, url: &Url, baseline: Duration) -> Result<Duration> {
+    async fn check_robots_uncached(
+        &self,
+        url: &Url,
+        baseline: Duration,
+        robots: &mut HashMap<String, Policy>,
+    ) -> Result<Duration> {
         let origin = url.origin().ascii_serialization();
-        if !self.robots.contains_key(&origin) {
+        if !robots.contains_key(&origin) {
             let mut robots_url = Url::parse(&format!("{origin}/robots.txt"))?;
             let mut result = None;
             for _ in 0..=5 {
@@ -493,6 +600,8 @@ impl<'a> Network<'a> {
                         true,
                         false,
                         Default::default(),
+                        &mut Transfer::default(),
+                        false,
                     )
                     .await?;
                 if status.is_redirection() {
@@ -550,12 +659,12 @@ impl<'a> Network<'a> {
                 });
                 break;
             }
-            self.robots.insert(
+            robots.insert(
                 origin.clone(),
                 result.context("Too many robots.txt redirects")?,
             );
         }
-        let policy = &self.robots[&origin];
+        let policy = &robots[&origin];
         let mut matcher = robotstxt::DefaultMatcher::default();
         anyhow::ensure!(
             matcher.one_agent_allowed_by_robots(&policy.text, "ZimStudio", url.as_str()),
@@ -563,32 +672,49 @@ impl<'a> Network<'a> {
         );
         Ok(baseline.max(policy.delay))
     }
-    pub async fn get(&mut self, url: &Url) -> Result<(Url, String, Vec<u8>)> {
-        self.get_with_purpose(url, false, false).await
+    pub async fn get(&self, url: &Url) -> Result<(Url, String, Vec<u8>)> {
+        self.get_with_purpose(url, false, false, &mut Transfer::default())
+            .await
     }
-    pub async fn rendering_delay(&mut self, url: &Url) -> Result<Duration> {
+    pub async fn rendering_delay(&self, url: &Url) -> Result<Duration> {
         self.check_robots(url, self.delay).await
     }
-    pub async fn get_asset(&mut self, url: &Url) -> Result<(Url, String, Vec<u8>)> {
-        let result = self.get_with_purpose(url, true, false).await;
+    pub async fn get_asset(&self, url: &Url) -> Result<(Url, String, Vec<u8>)> {
+        self.get_asset_with_transfer(url, &mut Transfer::default())
+            .await
+    }
+    async fn get_asset_with_transfer(
+        &self,
+        url: &Url,
+        transfer: &mut Transfer<'_>,
+    ) -> Result<(Url, String, Vec<u8>)> {
+        let result = self.get_with_purpose(url, true, false, transfer).await;
         if let Err(error) = &result {
             if let Some(alternative) =
                 public_font_alternative(url).filter(|_| temporary_source_failure(error))
             {
                 self.record.log("warning", "The font proxy is unavailable. Trying the same font families from Google Fonts, with its own robots and rate-limit checks.").await?;
-                return self.get_with_purpose(&alternative, true, false).await;
+                let batch = transfer.batch;
+                transfer.batch = false;
+                let result = self
+                    .get_with_purpose(&alternative, true, false, transfer)
+                    .await;
+                transfer.batch = batch;
+                return result;
             }
         }
         result
     }
-    pub async fn get_same_origin(&mut self, url: &Url) -> Result<(Url, String, Vec<u8>)> {
-        self.get_with_purpose(url, false, true).await
+    pub async fn get_same_origin(&self, url: &Url) -> Result<(Url, String, Vec<u8>)> {
+        self.get_with_purpose(url, false, true, &mut Transfer::default())
+            .await
     }
     async fn get_with_purpose(
-        &mut self,
+        &self,
         url: &Url,
         asset: bool,
         same_origin: bool,
+        transfer: &mut Transfer<'_>,
     ) -> Result<(Url, String, Vec<u8>)> {
         let origin = url.origin();
         let mut url = url.clone();
@@ -627,7 +753,7 @@ impl<'a> Network<'a> {
                         return Err(error);
                     }
                     let origin = url.origin().ascii_serialization();
-                    if self.cdn_notices.insert(origin.clone()) {
+                    if self.cdn_notices.lock().await.insert(origin.clone()) {
                         self.record.log("warning",format!("The policy endpoint at {origin} is unreachable. Fetching this page's linked images, styles and fonts as browser assets. Explicit denials, HTTP failures, rate-limit cooldowns and download limits still apply.")).await?;
                     }
                     (baseline, true)
@@ -673,8 +799,21 @@ impl<'a> Network<'a> {
                     }
                 }
             }
+            let parallel = transfer.batch
+                && url.origin() == origin
+                && passive_cdn_asset(&url)
+                && delay.is_zero();
             let (status, headers, body) = self
-                .raw(&url, delay, self.cap, false, asset, conditional)
+                .raw(
+                    &url,
+                    delay,
+                    self.cap,
+                    false,
+                    asset,
+                    conditional,
+                    transfer,
+                    parallel,
+                )
                 .await?;
             if passive_fallback && status.is_success() {
                 let mime = headers
@@ -682,20 +821,30 @@ impl<'a> Network<'a> {
                     .and_then(|h| h.to_str().ok())
                     .unwrap_or("");
                 anyhow::ensure!(
-                    mime.starts_with("image/")
-                        || mime.starts_with("font/")
-                        || mime.starts_with("text/css")
-                        || mime.starts_with("application/font")
-                        || mime.starts_with("application/x-font"),
+                    passive_cdn_mime(mime),
                     "The CDN returned {mime} instead of an image, stylesheet or font: {url}"
                 );
             }
             if status == StatusCode::NOT_MODIFIED {
                 let resource = cached.context("Server returned 304 without a cached asset")?;
-                let body =
-                    tokio::fs::read(self.record.dir.join("cache").join(&resource.path)).await?;
+                let path = self.record.dir.join("cache").join(&resource.path);
+                let (size, body) = if let Some(file) = transfer.file.as_deref_mut() {
+                    let mut saved = tokio::fs::File::open(path).await?;
+                    anyhow::ensure!(
+                        saved.metadata().await?.len() == resource.size && resource.size <= self.cap,
+                        "Cached asset is incomplete or exceeds the file limit"
+                    );
+                    file.set_len(0).await?;
+                    file.rewind().await?;
+                    let size = tokio::io::copy(&mut saved, file).await?;
+                    file.flush().await?;
+                    (size, Vec::new())
+                } else {
+                    let body = tokio::fs::read(path).await?;
+                    (body.len() as u64, body)
+                };
                 anyhow::ensure!(
-                    body.len() as u64 == resource.size && resource.size <= self.cap,
+                    size == resource.size && resource.size <= self.cap,
                     "Cached asset is incomplete or exceeds the file limit"
                 );
                 let base = tokio::fs::read_to_string(
@@ -709,20 +858,16 @@ impl<'a> Network<'a> {
                 return Ok((http_url(&base)?, resource.mime, body));
             }
             if asset && status.is_success() {
-                self.record
-                    .change(|j| {
-                        if let Some(resource) = j.resources.get_mut(url.as_str()) {
-                            resource.etag = headers
-                                .get("etag")
-                                .and_then(|h| h.to_str().ok())
-                                .map(str::to_string);
-                            resource.last_modified = headers
-                                .get("last-modified")
-                                .and_then(|h| h.to_str().ok())
-                                .map(str::to_string);
-                        }
-                    })
-                    .await?;
+                transfer.validators = Some((
+                    headers
+                        .get("etag")
+                        .and_then(|h| h.to_str().ok())
+                        .map(str::to_owned),
+                    headers
+                        .get("last-modified")
+                        .and_then(|h| h.to_str().ok())
+                        .map(str::to_owned),
+                ));
             }
             if status.is_redirection() {
                 url = resolve(
@@ -791,31 +936,51 @@ pub async fn pace(url: &Url, delay: Duration) {
     let _gate = slot.gate.lock().await;
     loop {
         let wait = {
-            let mut next = slot.next.lock().await;
+            let mut timing = slot.timing.lock().await;
             let now = Instant::now();
-            if *next <= now {
-                *next = now + delay;
+            let next = timing
+                .last_activity
+                .map_or(now, |last| last + delay)
+                .max(timing.cooldown_until.unwrap_or(now));
+            if next <= now {
+                timing.last_activity = Some(now);
                 return;
             }
-            *next
+            next
         };
         tokio::time::sleep_until(wait.into()).await;
     }
 }
 
+pub(crate) async fn note_response(url: &Url) {
+    host_slot(url).await.timing.lock().await.last_activity = Some(Instant::now());
+}
+
 pub async fn cooldown(url: &Url, delay: Duration) {
     let slot = host_slot(url).await;
-    let mut next = slot.next.lock().await;
-    *next = (*next).max(Instant::now() + delay);
+    let mut timing = slot.timing.lock().await;
+    timing.cooldown_until = timing.cooldown_until.max(Some(Instant::now() + delay));
 }
 
 pub async fn wait_saved_cooldown(record: &Record) -> Result<()> {
-    let until = record.job.lock().await.retry_at;
-    if let Some(until) = until.filter(|until| *until > now()) {
-        tokio::time::sleep(Duration::from_secs(until.saturating_sub(now()))).await;
-        record.change(|j| j.retry_at = None).await?;
+    loop {
+        let until = record.job.lock().await.retry_at;
+        let Some(until) = until else {
+            return Ok(());
+        };
+        let remaining = until.saturating_sub(now());
+        if remaining > 0 {
+            tokio::time::sleep(Duration::from_secs(remaining)).await;
+        } else {
+            record
+                .change(|j| {
+                    if j.retry_at == Some(until) {
+                        j.retry_at = None;
+                    }
+                })
+                .await?;
+        }
     }
-    Ok(())
 }
 
 pub fn retry_delay(value: Option<&str>, attempt: u32) -> Duration {
@@ -978,7 +1143,7 @@ fn detects_known_verification_pages_without_keyword_false_positives() {
 }
 
 pub async fn scan(record: &Record) -> Result<()> {
-    let mut network = Network::new(record).await?.with_cap(8 * 1024 * 1024);
+    let network = Network::new(record).await?.with_cap(8 * 1024 * 1024);
     crate::sitemap::discover(record).await?;
     loop {
         let snapshot = record.job.lock().await.clone();
@@ -1222,9 +1387,100 @@ fn needed_resources(job: &Job) -> std::collections::BTreeSet<String> {
     needed
 }
 
-pub async fn download(record: &Record) -> Result<()> {
+struct FetchedResource {
+    file: atomic_write_file::AtomicWriteFile,
+    final_url: Url,
+    mime: String,
+    size: u64,
+    validators: Option<(Option<String>, Option<String>)>,
+}
+
+async fn fetch_resource(
+    network: &Network<'_>,
+    resource: &Resource,
+    batch: bool,
+) -> Result<FetchedResource> {
+    let file = atomic_write_file::AtomicWriteFile::open(
+        network.record.dir.join("cache").join(&resource.path),
+    )?;
+    let mut output = tokio::fs::File::from_std(file.as_file().try_clone()?);
+    let mut transfer = Transfer {
+        file: Some(&mut output),
+        batch,
+        validators: None,
+    };
+    let requested = http_url(&resource.url)?;
+    let (final_url, mime, _) = network
+        .get_asset_with_transfer(&requested, &mut transfer)
+        .await?;
+    let validators = if final_url == requested {
+        transfer.validators
+    } else {
+        // A redirect target's validators are not valid for the original URL.
+        Some((None, None))
+    };
+    let size = output.metadata().await?.len();
+    drop(output);
+    Ok(FetchedResource {
+        file,
+        final_url,
+        mime,
+        size,
+        validators,
+    })
+}
+
+async fn save_resource(record: &Record, resource: &Resource, asset: FetchedResource) -> Result<()> {
+    let FetchedResource {
+        file,
+        final_url,
+        mime,
+        size,
+        validators,
+    } = asset;
+    file.commit()?;
+    let cache = record.dir.join("cache");
+    let dependencies = if mime.contains("text/css") {
+        let bytes = tokio::fs::read(cache.join(&resource.path)).await?;
+        css_urls(&String::from_utf8_lossy(&bytes), &final_url)
+    } else {
+        vec![]
+    };
+    tokio::fs::write(
+        cache.join(format!("{}.url", resource.path)),
+        final_url.as_str(),
+    )
+    .await?;
+    record
+        .change(|j| {
+            let r = j.resources.get_mut(&resource.url).unwrap();
+            r.state = "done".into();
+            r.error = None;
+            r.mime = mime;
+            r.size = size;
+            if let Some((etag, last_modified)) = validators {
+                r.etag = etag;
+                r.last_modified = last_modified;
+            }
+            r.dependencies = dependencies.clone();
+            for url in dependencies {
+                add_resource(j, &url);
+            }
+        })
+        .await
+}
+
+pub async fn download(record: &Record, parallel_requests: usize) -> Result<()> {
+    let network = Network::new(record).await?;
+    download_with_network(record, &network, parallel_requests).await
+}
+
+async fn download_with_network(
+    record: &Record,
+    network: &Network<'_>,
+    parallel_requests: usize,
+) -> Result<()> {
     repair_saved_stylesheets(record).await?;
-    let mut network = Network::new(record).await?;
     let job = record.job.lock().await.clone();
     record
         .change(|j| {
@@ -1251,63 +1507,120 @@ pub async fn download(record: &Record) -> Result<()> {
                 }
             })
             .await?;
+        let site_origins: std::collections::BTreeSet<_> = job
+            .config
+            .starting_pages()
+            .into_iter()
+            .map(|p| p.url)
+            .chain(
+                job.entries
+                    .iter()
+                    .filter(|e| e.embedded_in.is_empty() && e.media_file.is_none())
+                    .map(|e| e.url.clone()),
+            )
+            .filter_map(|url| {
+                http_url(&url)
+                    .ok()
+                    .map(|u| u.origin().ascii_serialization())
+            })
+            .collect();
+        let parallel_requests = parallel_requests.clamp(1, MAX_CDN_PARALLEL_REQUESTS);
+        let mut parallel = parallel_requests > 1
+            && job.config.capture.max_download_mb.is_none()
+            && job.retry_at.is_none_or(|until| until <= now());
+        record.peak_asset_requests.store(0, Ordering::Relaxed);
+        let mut group_origin = None;
+        let mut in_flight = HashSet::new();
+        let mut transfers = FuturesUnordered::new();
         loop {
-            let next = {
-                let job = record.job.lock().await;
+            let batch = {
+                let mut job = record.job.lock().await;
                 let needed = needed_resources(&job);
-                job.resources
-                    .values()
-                    .find(|r| r.state == "pending" && needed.contains(&r.url))
-                    .cloned()
+                let pending = || {
+                    job.resources.values().filter(|r| {
+                        r.state == "pending"
+                            && needed.contains(&r.url)
+                            && !in_flight.contains(&r.url)
+                    })
+                };
+                if transfers.is_empty() {
+                    group_origin = pending()
+                        .next()
+                        .and_then(|r| http_url(&r.url).ok())
+                        .filter(|u| {
+                            parallel
+                                && passive_cdn_asset(u)
+                                && !site_origins.contains(&u.origin().ascii_serialization())
+                        })
+                        .map(|u| u.origin());
+                }
+                let batch: Vec<_> = if let Some(origin) = &group_origin {
+                    pending()
+                        .filter(|r| {
+                            http_url(&r.url)
+                                .is_ok_and(|u| &u.origin() == origin && passive_cdn_asset(&u))
+                        })
+                        .take(parallel_requests - transfers.len())
+                        .cloned()
+                        .collect()
+                } else {
+                    pending().take(1).cloned().collect()
+                };
+                if transfers.is_empty() && batch.is_empty() {
+                    break;
+                }
+                let done = job.resources.values().filter(|r| r.state == "done").count() as u64;
+                let total = Some(job.resources.len() as u64);
+                if transfers.is_empty() {
+                    job.progress = Progress {
+                        label: if group_origin.is_some() {
+                            "Downloading CDN assets".into()
+                        } else {
+                            format!("Downloading {}", batch[0].url)
+                        },
+                        completed: done,
+                        total,
+                        unit: "files".into(),
+                        updated_at: now(),
+                        active_asset_requests: Some(0),
+                        ..Progress::default()
+                    };
+                } else {
+                    job.progress.completed = done;
+                    job.progress.total = total;
+                    job.progress.updated_at = now();
+                }
+                batch
             };
-            let Some(resource) = next else {
+            let concurrent = group_origin.is_some();
+            for resource in batch {
+                in_flight.insert(resource.url.clone());
+                transfers.push(async move {
+                    let result = fetch_resource(network, &resource, concurrent).await;
+                    (resource, result)
+                });
+            }
+
+            let Some((resource, result)) = transfers.next().await else {
                 break;
             };
-            let (done, total) = {
-                let job = record.job.lock().await;
-                (
-                    job.resources.values().filter(|r| r.state == "done").count(),
-                    job.resources.len(),
-                )
-            };
-            record
-                .progress(
-                    format!("Downloading {}", resource.url),
-                    done as u64,
-                    Some(total as u64),
-                    "files",
-                )
-                .await;
-            let result = network.get_asset(&http_url(&resource.url)?).await;
+            in_flight.remove(&resource.url);
             match result {
-                Ok((final_url, mime, body)) => {
-                    let dependencies = if mime.contains("text/css") {
-                        css_urls(&String::from_utf8_lossy(&body), &final_url)
-                    } else {
-                        vec![]
-                    };
-                    tokio::fs::write(record.dir.join("cache").join(&resource.path), &body).await?;
-                    // CSS may have redirected; resolve nested references against its effective URL.
-                    tokio::fs::write(
-                        record
-                            .dir
-                            .join("cache")
-                            .join(format!("{}.url", resource.path)),
-                        final_url.as_str(),
-                    )
-                    .await?;
-                    record
-                        .change(|j| {
-                            let r = j.resources.get_mut(&resource.url).unwrap();
-                            r.state = "done".into();
-                            r.mime = mime;
-                            r.size = body.len() as u64;
-                            r.dependencies = dependencies.clone();
-                            for url in dependencies {
-                                add_resource(j, &url);
-                            }
-                        })
-                        .await?;
+                Ok(asset) => save_resource(record, &resource, asset).await?,
+                Err(error)
+                    if concurrent
+                        && error
+                            .downcast_ref::<RetryFailure>()
+                            .is_some_and(|e| e.attempts == 1) =>
+                {
+                    // Cancel the active requests and keep unfinished files pending.
+                    parallel = false;
+                    transfers.clear();
+                    in_flight.clear();
+                    record.log("info", "The CDN asked us to slow down. Continuing one file at a time after the cooldown.").await?;
+                }
+                Err(error) if error.is::<std::io::Error>() => {
+                    return Err(error.context("Could not save the linked asset to disk"));
                 }
                 Err(error) => {
                     let message = format!("{error:#}");
@@ -1330,6 +1643,16 @@ pub async fn download(record: &Record) -> Result<()> {
                     }
                 }
             }
+        }
+        record.job.lock().await.progress.active_asset_requests = None;
+        let peak = record.peak_asset_requests.load(Ordering::Relaxed);
+        if peak > 1 {
+            record
+                .log(
+                    "info",
+                    format!("Linked asset downloads reached {peak} simultaneous requests."),
+                )
+                .await?;
         }
     }
     record
@@ -1539,10 +1862,12 @@ mod tests {
             stop: Default::default(),
             running: Default::default(),
             import_cancel: Default::default(),
+            active_asset_requests: Default::default(),
+            peak_asset_requests: Default::default(),
             dir: temp.path().to_owned(),
         };
         for _ in 0..3 {
-            let mut network = Network::new(&record).await.unwrap();
+            let network = Network::new(&record).await.unwrap();
             assert!(network.check_robots(&url, Duration::ZERO).await.is_err());
         }
         assert_eq!(
@@ -1563,7 +1888,7 @@ mod tests {
         crate::robots_cache::save(&record, &cached).await.unwrap();
         // Clear the saved cooldown only in this fixture to avoid a real backoff wait.
         record.job.lock().await.retry_at = None;
-        let mut network = Network::new(&record).await.unwrap();
+        let network = Network::new(&record).await.unwrap();
         network
             .check_robots(&url, Duration::ZERO)
             .await
@@ -1607,7 +1932,7 @@ mod tests {
         pace(&url, Duration::from_millis(100)).await;
         let queued_url = url.clone();
         let queued = tokio::spawn(async move {
-            pace(&queued_url, Duration::ZERO).await;
+            pace(&queued_url, Duration::from_millis(100)).await;
             Instant::now()
         });
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -1618,6 +1943,21 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(granted.duration_since(extended) >= Duration::from_millis(200));
+    }
+
+    #[tokio::test]
+    async fn retry_uses_the_edited_spacing_instead_of_the_previous_delay() {
+        let url = http_url("https://edited-spacing.test/").unwrap();
+        pace(&url, Duration::from_secs(30)).await;
+        note_response(&url).await;
+        let edited_at = Instant::now();
+        tokio::time::timeout(
+            Duration::from_secs(3),
+            pace(&url, Duration::from_millis(40)),
+        )
+        .await
+        .unwrap();
+        assert!(edited_at.elapsed() >= Duration::from_millis(40));
     }
 
     #[tokio::test]
@@ -1698,6 +2038,8 @@ mod tests {
             stop: Default::default(),
             running: Default::default(),
             import_cancel: Default::default(),
+            active_asset_requests: Default::default(),
+            peak_asset_requests: Default::default(),
             dir: temp.path().to_owned(),
         };
         let mut network = Network::new(&record).await.unwrap();
@@ -1728,12 +2070,13 @@ mod tests {
         })
         .await
         .expect("CDN assets were artificially delayed");
-        // A page on that same recognized host still reserves the configured gap.
+        // A page on that same recognized host still waits for the configured gap.
         let page = url("fonts.gstatic.com", "page");
-        network.get(&page).await.unwrap();
-        let slot = host_slot(&page).await;
-        let next = *slot.next.lock().await;
-        assert!(next.saturating_duration_since(Instant::now()) > Duration::from_secs(25));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), network.get(&page))
+                .await
+                .is_err()
+        );
         network
             .get_asset(&url("fonts.googleapis.com", "one"))
             .await
@@ -1780,7 +2123,7 @@ mod tests {
         server.abort();
         // Policies survive a fresh Network without fetching again, including
         // exclusions and declared Crawl-delay. The server is now unavailable.
-        let mut resumed = Network::new(&record).await.unwrap();
+        let resumed = Network::new(&record).await.unwrap();
         let delay = resumed
             .check_robots(&url("fonts.googleapis.com", "three"), Duration::ZERO)
             .await
@@ -1977,6 +2320,234 @@ mod tests {
         server.abort();
     }
 
+    struct CdnFixture {
+        active: std::sync::atomic::AtomicUsize,
+        peak: std::sync::atomic::AtomicUsize,
+        robots: std::sync::atomic::AtomicUsize,
+        initial_group: tokio::sync::Barrier,
+        replacement_started: tokio::sync::Notify,
+        peak_after_limit: std::sync::atomic::AtomicUsize,
+        limit_at: std::sync::Mutex<Option<Instant>>,
+        first_after_limit: std::sync::Mutex<Option<Instant>>,
+    }
+
+    async fn check_cdn_batch(
+        host: &str,
+        own_site: bool,
+        crawl_delay: bool,
+        budget: bool,
+        throttle: bool,
+        parallel_requests: usize,
+    ) {
+        use axum::{
+            body::{Body, Bytes},
+            extract::Path,
+            response::{IntoResponse, Response},
+            routing::get,
+            Router,
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+
+        struct Active(Arc<CdnFixture>);
+        impl Drop for Active {
+            fn drop(&mut self) {
+                self.0.active.fetch_sub(1, SeqCst);
+            }
+        }
+
+        let test_refill = host == "cdn.arstechnica.net" && parallel_requests == 6;
+        let fixture = Arc::new(CdnFixture {
+            active: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
+            robots: AtomicUsize::new(0),
+            initial_group: tokio::sync::Barrier::new(default_cdn_parallel_requests()),
+            replacement_started: Default::default(),
+            peak_after_limit: AtomicUsize::new(0),
+            limit_at: Default::default(),
+            first_after_limit: Default::default(),
+        });
+        let state = fixture.clone();
+        let app = Router::new().route(
+            "/{*path}",
+            get(move |Path(path): Path<String>| {
+                let state = state.clone();
+                async move {
+                    if path == "robots.txt" {
+                        state.robots.fetch_add(1, SeqCst);
+                        return if crawl_delay {
+                            "User-agent: *\nCrawl-delay: 0.1"
+                        } else {
+                            "User-agent: *\nAllow: /"
+                        }
+                        .into_response();
+                    }
+                    let after_limit = state.limit_at.lock().unwrap().is_some();
+                    if throttle
+                        && !after_limit
+                        && matches!(path.as_str(), "0.png" | "1.png" | "2.css")
+                    {
+                        state.initial_group.wait().await;
+                    }
+                    if throttle && path == "0.png" && !after_limit {
+                        *state.limit_at.lock().unwrap() = Some(Instant::now());
+                        return (
+                            StatusCode::TOO_MANY_REQUESTS,
+                            [("Retry-After", "3")],
+                            "slow down",
+                        )
+                            .into_response();
+                    }
+                    let active = state.active.fetch_add(1, SeqCst) + 1;
+                    state.peak.fetch_max(active, SeqCst);
+                    if after_limit {
+                        state.peak_after_limit.fetch_max(active, SeqCst);
+                        state
+                            .first_after_limit
+                            .lock()
+                            .unwrap()
+                            .get_or_insert_with(Instant::now);
+                    }
+                    let (mime, bytes) = if path.ends_with(".css") {
+                        ("text/css", "@font-face { src: url(/nested.woff2) }")
+                    } else if path.ends_with(".woff2") {
+                        ("font/woff2", "font bytes")
+                    } else {
+                        ("image/png", "image bytes")
+                    };
+                    if path == "nested.woff2" {
+                        state.replacement_started.notify_one();
+                    }
+                    let wait_for_replacement = test_refill && path == "5.png";
+                    let guard = Active(state);
+                    // Hold the server's response body open after headers are sent,
+                    // so a limit on headers alone cannot pass this test.
+                    let body = Body::from_stream(futures_util::stream::once(async move {
+                        if wait_for_replacement {
+                            guard.0.replacement_started.notified().await;
+                        }
+                        let _guard = guard;
+                        tokio::time::sleep(Duration::from_millis(240)).await;
+                        Ok::<_, std::convert::Infallible>(Bytes::from_static(bytes.as_bytes()))
+                    }));
+                    Response::builder()
+                        .header("Content-Type", mime)
+                        .header("ETag", "\"fixture\"")
+                        .body(body)
+                        .unwrap()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let origin = format!("http://{host}:{}", address.port());
+        let source = if own_site {
+            format!("{origin}/")
+        } else {
+            "https://example.test/".into()
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let engine = crate::Engine::open(temp.path()).await.unwrap();
+        let mut config: NewJob = serde_json::from_value(serde_json::json!({
+            "url": source, "title": "CDN batch fixture", "kind": "website", "max_items": 1, "max_depth": 0,
+            "delay_ms": 1000, "max_resource_mb": 1, "language": "eng", "description": "Linked asset fixture", "creator": "Test",
+            "include_assets": true
+        })).unwrap();
+        if budget {
+            config.capture.max_download_mb = Some(1);
+        }
+        let job = engine.create_record(config, false).await.unwrap();
+        let record = engine.record(&job.id).await.unwrap();
+        let mut assets = ["0.png", "1.png", "2.css", "3.png", "4.png", "5.png"]
+            .map(|path| format!("{origin}/{path}"))
+            .to_vec();
+        if test_refill {
+            assets.push(format!("{origin}/2-ordinary"));
+        }
+        let entry: Entry = serde_json::from_value(serde_json::json!({
+            "id": "page", "url": source, "title": "Page", "depth": 0, "selected": true,
+            "state": "pending", "text": "", "assets": assets
+        }))
+        .unwrap();
+        record.change(|j| j.entries.push(entry)).await.unwrap();
+        let mut network = Network::new(&record).await.unwrap();
+        network.client = Client::builder()
+            .no_proxy()
+            .resolve(host, address)
+            .build()
+            .unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(20),
+            download_with_network(&record, &network, parallel_requests),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let job = record.job.lock().await;
+        assert_eq!(fixture.robots.load(SeqCst), 1);
+        assert_eq!(job.resources.len(), if test_refill { 8 } else { 7 });
+        for resource in job.resources.values() {
+            assert_eq!(resource.state, "done");
+            assert_eq!(resource.etag.as_deref(), Some("\"fixture\""));
+            assert_eq!(
+                std::fs::metadata(record.dir.join("cache").join(&resource.path))
+                    .unwrap()
+                    .len(),
+                resource.size
+            );
+        }
+        assert!(job
+            .resources
+            .contains_key(&format!("{origin}/nested.woff2")));
+        if throttle {
+            let limited = fixture.limit_at.lock().unwrap().unwrap();
+            let resumed = fixture.first_after_limit.lock().unwrap().unwrap();
+            assert!(resumed.duration_since(limited) >= Duration::from_secs(3));
+            assert_eq!(fixture.peak_after_limit.load(SeqCst), 1);
+            assert!(job
+                .logs
+                .iter()
+                .any(|log| log.message.contains("Continuing one file at a time")));
+        } else {
+            let expected = if is_static_cdn(&http_url(&origin).unwrap())
+                && !own_site
+                && !crawl_delay
+                && !budget
+            {
+                parallel_requests
+            } else {
+                1
+            };
+            assert_eq!(
+                fixture.peak.load(SeqCst),
+                expected,
+                "{host}, own site {own_site}, crawl delay {crawl_delay}, budget {budget}"
+            );
+        }
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn parallel_cdn_bodies_are_bounded_and_page_origins_delays_and_budgets_stay_serial() {
+        tokio::join!(
+            check_cdn_batch("cdn.jsdelivr.net", false, false, false, false, 1),
+            check_cdn_batch("cdn.jsdelivr.net", false, false, false, false, 3),
+            check_cdn_batch("cdn.arstechnica.net", false, false, false, false, 6),
+            check_cdn_batch("cdn.jsdelivr.net", true, false, false, false, 3),
+            check_cdn_batch("cdn.jsdelivr.net", false, true, false, false, 3),
+            check_cdn_batch("cdn.jsdelivr.net", false, false, true, false, 3),
+            check_cdn_batch("static.example.test", false, false, false, false, 3),
+        );
+    }
+
+    #[tokio::test]
+    async fn cdn_rate_limit_cancels_batch_and_recovers_serially_after_retry_after() {
+        check_cdn_batch("cdn.jsdelivr.net", false, false, false, true, 3).await;
+    }
+
     #[tokio::test]
     async fn host_outages_stop_once_and_keep_other_assets_queued_for_resume() {
         use axum::{routing::get, Router};
@@ -2011,7 +2582,9 @@ mod tests {
         let record = engine.record(&job.id).await.unwrap();
         let entry:Entry=serde_json::from_value(serde_json::json!({"id":"page","url":source,"title":"Page","depth":0,"selected":true,"state":"pending","size":null,"duration":null,"error":null,"text":"Saved page","assets":[format!("http://{address}/one.png"),format!("http://{address}/two.png"),format!("http://{address}/three.png")],"media_file":null})).unwrap();
         record.change(|job| job.entries.push(entry)).await.unwrap();
-        let error = download(&record).await.unwrap_err();
+        let error = download(&record, default_cdn_parallel_requests())
+            .await
+            .unwrap_err();
         assert!(error
             .to_string()
             .contains("Remaining files are still queued"));

@@ -34,9 +34,11 @@ async fn main() -> Result<()> {
         stop: Default::default(),
         running: Default::default(),
         import_cancel: Default::default(),
+        active_asset_requests: Default::default(),
+        peak_asset_requests: Default::default(),
         dir: dir.clone(),
     };
-    let mut network = web::Network::new(&record).await?;
+    let network = web::Network::new(&record).await?;
     let mut succeeded = 0;
     let mut megabytes = 0.0;
     let mut failures = Vec::new();

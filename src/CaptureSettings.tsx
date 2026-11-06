@@ -1,6 +1,7 @@
 import type { CaptureOptions, Config } from "./types";
 import { captureOptions } from "./capture";
 import { browserOnly } from "./browser/client";
+import { NumberInput } from "./NumberInput";
 export function CaptureSettings({
   config,
   onChange,
@@ -23,15 +24,14 @@ export function CaptureSettings({
       <div className="form-grid">
         <div>
           <label htmlFor="download-budget">Download budget (MB)</label>
-          <input
+          <NumberInput
             id="download-budget"
-            type="number"
             min={1}
             max={1048576}
             placeholder="Unlimited"
-            value={c.max_download_mb ?? ""}
-            onChange={(e) =>
-              update("max_download_mb", e.target.value ? +e.target.value : null)
+            value={c.max_download_mb}
+            onValueChange={(value) =>
+              update("max_download_mb", Number.isFinite(value) ? value : null)
             }
           />
           <p className="settings-note">
@@ -73,14 +73,14 @@ export function CaptureSettings({
                   <label htmlFor="render-timeout">
                     Rendering timeout per page (seconds)
                   </label>
-                  <input
+                  <NumberInput
                     id="render-timeout"
-                    type="number"
+                    required
                     min={10}
                     max={180}
                     value={c.render_timeout_secs}
-                    onChange={(e) =>
-                      update("render_timeout_secs", +e.target.value)
+                    onValueChange={(value) =>
+                      update("render_timeout_secs", value)
                     }
                   />
                   <p className="settings-note">

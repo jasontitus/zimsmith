@@ -99,7 +99,7 @@ pub async fn discover(record: &Record) -> Result<()> {
             }
         })
         .await?;
-    let mut network = web::Network::new(record).await?.with_cap(2 * 1024 * 1024);
+    let network = web::Network::new(record).await?.with_cap(2 * 1024 * 1024);
     loop {
         let snapshot = record.job.lock().await.clone();
         let state = &snapshot.sitemap_checkpoint;
@@ -114,7 +114,7 @@ pub async fn discover(record: &Record) -> Result<()> {
         let url = web::http_url(&value)?;
         let result = network.get_same_origin(&url).await;
         // robots.txt was checked for this origin by the normal request path.
-        let declared = network.declared_sitemaps(&url);
+        let declared = network.declared_sitemaps(&url).await;
         let parsed = result.and_then(|(effective, _, bytes)| {
             anyhow::ensure!(
                 effective.origin() == url.origin(),

@@ -511,6 +511,7 @@ async fn automatically_builds_small_jobs_and_keeps_larger_or_partial_scans_for_r
     let saved = Settings {
         auto_start_small_jobs: false,
         auto_start_item_limit: 42,
+        cdn_parallel_requests: 5,
         ..Settings::default()
     };
     engine.update_settings(saved.clone()).await.unwrap();
@@ -990,6 +991,7 @@ async fn editing_metadata_retries_packaging_offline_without_restarting_downloads
     checkpoint.phase = "package".into();
     checkpoint.error = Some("Interrupted packaging".into());
     checkpoint.entries[0].state = "done".into();
+    checkpoint.entries[0].title = "Saved\nvideo\twith a title".into();
     checkpoint.entries[0].media_file = Some("saved.mp4".into());
     checkpoint.entries[0].size = Some(payload.len() as u64);
     checkpoint.retry_at = Some(zim_engine::now() + 1);

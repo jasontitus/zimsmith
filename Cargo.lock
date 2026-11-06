@@ -6783,6 +6783,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "cssparser 0.37.0",
+ "futures-util",
  "httpdate",
  "lol_html",
  "md-5",

@@ -155,10 +155,17 @@ test("failed crawls can be edited, cancelled, and retried under the same job", a
       .getByLabel("Archive title", { exact: true })
       .fill("Recovered edited collection");
     await page.locator("#limit").fill("10");
-    await page.getByLabel("Link depth", { exact: true }).fill("0");
-    await page
-      .getByLabel("Request spacing (seconds)", { exact: true })
-      .fill("1.5");
+    const depth = page.getByLabel("Link depth", { exact: true });
+    await depth.fill("0");
+    await depth.press("Backspace");
+    await expect(depth).toHaveValue("");
+    await depth.fill("0");
+    const delay = page.getByLabel("Delay between page requests (seconds)", {
+      exact: true,
+    });
+    await delay.press("Backspace");
+    await expect(delay).toHaveValue("");
+    await delay.fill("1.5");
     await page
       .getByRole("button", { name: "Save & retry", exact: true })
       .click();

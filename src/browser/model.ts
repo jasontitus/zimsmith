@@ -38,6 +38,7 @@ export const defaults = {
   auto_start_item_limit: 100,
   archive_template: "atlas" as const,
   zstd_level: 3,
+  cdn_parallel_requests: 3,
 };
 export function validate(config: Config) {
   validateCapture(config);

@@ -117,6 +117,15 @@ export function JobProgress({
         <div style={{ width: percent === null ? undefined : `${percent}%` }} />
       </div>
       <p className="progress-detail">{label}</p>
+      {job.status === "downloading" &&
+        progress?.active_asset_requests != null && (
+          <p className="progress-detail">
+            {progress.active_asset_requests} active asset{" "}
+            {progress.active_asset_requests === 1 ? "request" : "requests"}
+            {(progress.peak_asset_requests ?? 0) > 1 &&
+              ` · Peak ${progress.peak_asset_requests}`}
+          </p>
+        )}
       {!compact &&
         job.status === "scanning" &&
         job.config.kind === "website" && (

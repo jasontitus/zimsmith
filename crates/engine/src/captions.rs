@@ -179,7 +179,7 @@ async fn fetch(record: &Record, track: &Subtitle, user_agent: Option<&str>) -> R
         )
         .send()
         .await?;
-    cooldown(&url, delay).await;
+    crate::web::note_response(&url).await;
     let status = response.status();
     if status.as_u16() == 429 || status.is_server_error() {
         let wait = retry_delay(
@@ -463,6 +463,8 @@ mod live_test {
             stop: Default::default(),
             running: Default::default(),
             import_cancel: Default::default(),
+            active_asset_requests: Default::default(),
+            peak_asset_requests: Default::default(),
             dir: temp.path().to_owned(),
         };
         let rp = RustyPipe::builder()

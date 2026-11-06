@@ -328,7 +328,7 @@ pub async fn package(record: &Record) -> Result<()> {
         creator.begin_chunked_item(
             None,
             filename,
-            title.to_string(),
+            title.replace(char::is_control, " "),
             mime,
             Some(meta.len()),
             Some(compress),

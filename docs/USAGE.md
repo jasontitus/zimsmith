@@ -4,7 +4,7 @@
 
 ## Workflow
 
-1. Enter a hostname (such as `cnn.com`), website URL, YouTube channel/playlist/search/video URL, or direct media file. Hostnames default to HTTPS; explicit HTTP URLs and ports are preserved. Set item/depth limits, request spacing, language, and maximum individual file size.
+1. Enter a hostname (such as `cnn.com`), website URL, YouTube channel/playlist/search/video URL, or direct media file. Hostnames default to HTTPS; explicit HTTP URLs and ports are preserved. Set item/depth limits, the delay between page requests, language, and maximum individual file size.
 2. Scan. Websites cache HTML for discovery; media sources fetch metadata. With the default preferences, complete, error-free scans of **up to 100 items** proceed directly to downloading and building.
 3. Review jobs above the automatic threshold, incomplete scans, and scans with failed items. Select entries and confirm **Download & build ZIM**. Only approved entries enter the final contents and search index.
 4. Pause or resume from Activity. Completed items are checkpointed; interrupted jobs reopen paused. Failures retain a reason and retry action. Use **Edit crawl** on a failed or paused job to change its source, crawl limits, download settings, or archive details, then **Save & retry**. Cancel leaves the job unchanged. Source/type, item/depth limit, or asset-policy changes restart discovery; other changes resume the saved phase. Downloaded payloads are retained, with the previous manifest kept for recovery. Editing retains server backoff.
@@ -57,11 +57,19 @@ Static mode captures server-rendered HTML (up to 8 MB per page). Installed apps 
 
 Progress shows the actual request, including robots.txt checks. Each robots.txt request times out after 15 seconds; an unavailable policy is checkpointed for 60 seconds so Resume and other assets do not immediately repeat it. Successful policies are cached for an hour. Server cooldowns and robots exclusions still apply.
 
+**Delay between page requests** sets the minimum wait between crawl requests to the same host under ordinary pacing. Save and retry to use the new delay. Server cooldowns still apply.
+
+In installed apps, **Settings → CDN downloads** limits simultaneous downloads of linked images, stylesheets, and fonts from a recognized external CDN, such as Ars Technica’s static CDN. The range is 1–6, with a default of 3. Changes apply when downloads start or resume. Assets stream to disk, and each finished request frees a slot for the next eligible file. Progress shows the current active asset requests and the peak when more than one ran at once. Files can finish one at a time while several requests are active.
+
+Page fetching, unrecognized hosts, and hosts with a declared crawl delay stay serial. An explicit total download budget also keeps downloads serial so the limit is applied in order. If a CDN responds with 429 or 503, queued downloads wait for the server cooldown and continue one file at a time.
+
 Installed apps can recover linked images, stylesheets, and fonts on recognized external static CDNs when the policy endpoint times out or has an origin error. These are fetched as browser assets, with a single activity notice and a capture-report warning. The exception does not apply to the crawl’s own origin, unknown hosts, HTML, APIs, scripts or documents. Explicit robots denials, 429/503 responses, Retry-After, file-type checks, and download limits remain enforced. Hostinger’s static CDN uses the same fast-asset pacing as other known CDNs.
 
 A host-wide outage stops downloading once and keeps the remaining assets queued for Resume. It does not mark every remaining file as a separate failed request.
 
 For a paused or failed website download, **Build with available files** packages all selected cached pages and saved assets without more requests. Missing images, styles, or fonts are disclosed on the archive home page and in its capture report. Resume instead if you want to retry the missing downloads.
+
+If packaging previously failed with `title contains a control character`, use **Retry & resume** to rebuild from saved files. Zimsmith replaces control characters such as tabs and newlines with spaces in the ZIM directory titles.
 
 Open a failed attempt in **Activity**, choose **Delete failed attempt**, then confirm. This removes its activity entry and internal downloads, including any internal ZIM. Copies you previously exported remain in Files or Downloads. Running and paused jobs cannot be deleted through this action.
 

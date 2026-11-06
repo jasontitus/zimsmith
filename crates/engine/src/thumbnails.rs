@@ -30,7 +30,7 @@ pub async fn prepare(record: &Record) -> Result<()> {
     {
         return Ok(());
     }
-    let mut network = Network::new(record).await?.with_cap(2 * 1024 * 1024);
+    let network = Network::new(record).await?.with_cap(2 * 1024 * 1024);
     let directory = record.dir.join("media");
     tokio::fs::create_dir_all(&directory).await?;
     let entries: Vec<_> = job
