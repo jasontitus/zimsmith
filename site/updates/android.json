@@ -4,15 +4,15 @@
   "channel": "direct",
   "releases": [
     {
-      "version": "0.2.11",
-      "version_code": 2011,
+      "version": "0.2.12",
+      "version_code": 2012,
       "abi": "arm64-v8a",
       "min_sdk": 24,
-      "url": "https://github.com/jasontitus/zimsmith/releases/download/v0.2.11/Zimsmith-0.2.11-arm64-v8a-5a00cf3ea5ba.apk",
-      "sha256": "5a00cf3ea5ba9f267c8a431b32a01a11d9216761a94426fd533dd6393f9d8cf6",
+      "url": "https://github.com/jasontitus/zimsmith/releases/download/v0.2.12/Zimsmith-0.2.12-arm64-v8a-e2a6c0c961fb.apk",
+      "sha256": "e2a6c0c961fbd881bb869cb54150034458ee9a87f3bc98d92e9c3cb0e32a8737",
       "certificate_sha256": "f05a21df94164c0695b4e422bb413e2b7e5971ef44ecab3e2666faacb287aa89",
-      "size_bytes": 40934029,
-      "notes": "Keep eligible CDN downloads running in parallel, with configurable concurrency and active-request progress. Improve numeric settings entry and apply edited request delays when resuming.\n\nRecover ZIM packaging when page titles contain tabs or newlines. Retry the failed build using saved downloads.\n\nPrevent overlapping import preparation, refresh, and rebuild operations. Reject build commands outside valid lifecycle states. Includes state-machine documentation and regression tests."
+      "size_bytes": 41216653,
+      "notes": "Import WARC and WARC.GZ captures locally, review their pages and media, and build searchable ZIMs. Preserve captured URLs, styles and images without fetching missing content online.\n\nStream compressed captures with bounded memory and storage, reject damaged records, report omitted captures, and reuse uploads after interruption.\n\nIncludes a ten-site compatibility report covering news, blogs, science and documentation, plus offline recovery checks."
     }
   ]
 }
