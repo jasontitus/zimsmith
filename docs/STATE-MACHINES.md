@@ -140,4 +140,15 @@ Verification on 2026-11-08 passed with the fixes applied.
 - Desktop frontend and browser production builds, scoped Rust formatting and diff checks passed.
 - The browser regression file is included in the existing `test:browser` CI command.
 
+GitHub CI passed for implementation commit `628b5122c78db79703d9b2de144f06ad357fb0ee`. The completed [Check run](https://github.com/jasontitus/zimsmith/actions/runs/42462348451) verified the following coverage.
+
+| Platform                | Verified result                                                                                                                                                                               |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Linux, macOS, Windows   | 85 native engine/worker tests passed on each platform, with 6 intentionally ignored tests. Frontend build, Tauri compile check, sharing test, and share-extension synchronization test passed |
+| Linux browser/extension | All 24 tests passed, including the state-machine regressions, imports, captions, snapshots, embedded playback, JavaScript capture, and website templates                                      |
+| iOS                     | ARM64 engine compile check, share-extension typecheck, and durable-inbox test passed                                                                                                          |
+| Windows MD5             | Portable backend checks passed with the requested `asm` feature                                                                                                                               |
+
+These CI checks cover compilation and automated fixtures. They do not establish physical-device interruption behavior or an Android build for this change.
+
 Evidence lives in [native workflow regressions](../crates/engine/tests/workflow.rs), [browser state regressions](../tests/state-machines.spec.ts), [native import implementation](../crates/engine/src/imports.rs), and [browser command implementation](../src/browser/engine.ts).
