@@ -1835,3 +1835,69 @@ async fn validation_detects_checksum_and_directory_corruption_without_touching_t
         good
     );
 }
+
+#[tokio::test]
+async fn import_commands_preserve_finalizer_ownership_and_paused_state() {
+    use zim_engine::imports::ImportFile;
+    let temp = tempfile::tempdir().unwrap();
+    let engine = Engine::open(temp.path()).await.unwrap();
+    let files = vec![ImportFile {
+        path: "index.html".into(),
+        size: 5,
+    }];
+    let job = engine
+        .begin_import(config("https://example.test/".into()), files.clone(), None)
+        .await
+        .unwrap();
+    let record = engine.record(&job.id).await.unwrap();
+
+    // Hold the checkpoint lock so a chunk command is queued before the
+    // finalizer acquires ownership. Checking running before this lock races.
+    let locked = record.job.lock().await;
+    let upload = engine.import_chunk(&job.id, "index.html", 0, b"hello");
+    tokio::pin!(upload);
+    assert!(futures_util::poll!(&mut upload).is_pending());
+    record.running.store(true, Ordering::SeqCst);
+    drop(locked);
+    assert!(upload.await.is_err());
+    assert_eq!(
+        engine.import_offset(&job.id, "index.html").await.unwrap(),
+        0
+    );
+    assert!(engine
+        .begin_import(
+            config("https://example.test/".into()),
+            files.clone(),
+            Some(job.id.clone())
+        )
+        .await
+        .is_err());
+    engine.pause(&job.id).await.unwrap();
+    assert!(engine
+        .begin_import(
+            config("https://example.test/".into()),
+            files.clone(),
+            Some(job.id.clone())
+        )
+        .await
+        .is_err());
+    record.running.store(false, Ordering::SeqCst);
+    assert!(engine.finish_import(&job.id).await.is_err());
+    assert_eq!(engine.get(&job.id).await.unwrap().status, "paused");
+    engine
+        .begin_import(
+            config("https://example.test/".into()),
+            files,
+            Some(job.id.clone()),
+        )
+        .await
+        .unwrap();
+    engine
+        .import_chunk(&job.id, "index.html", 0, b"hello")
+        .await
+        .unwrap();
+    let reviewed = engine.finish_import(&job.id).await.unwrap();
+    assert_eq!(reviewed.status, "review");
+    assert!(engine.finish_import(&job.id).await.is_err());
+    assert_eq!(engine.get(&job.id).await.unwrap().status, "review");
+}

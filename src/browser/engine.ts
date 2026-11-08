@@ -37,6 +37,7 @@ export class BrowserEngine {
   private queue: string[] = [];
   private running = false;
   private controls = new Map<string, AbortController>();
+  private mutations = new Set<string>();
   private savedAt = new Map<string, number>();
   private constructor(private store: Store) {}
   static async open() {
@@ -110,6 +111,7 @@ export class BrowserEngine {
   }
   private idle(job: BrowserJob) {
     if (
+      this.controls.has(job.id) ||
       ["scanning", "downloading", "packaging", "pausing", "importing"].includes(
         job.status,
       )
@@ -153,6 +155,33 @@ export class BrowserEngine {
   async call(
     command: string,
     args: Record<string, unknown> = {},
+  ): Promise<unknown> {
+    // Pause/cancel must remain available while a long import is finalizing.
+    const exclusive = [
+      "resume_job",
+      "edit_job",
+      "build_job",
+      "delete_failed_job",
+      "begin_import",
+      "import_chunk",
+      "finish_import",
+      "refresh_job",
+      "rebuild_job",
+    ].includes(command);
+    const id = String(args.id || args.existingId || "");
+    if (!exclusive || !id) return this.dispatch(command, args);
+    if (this.mutations.has(id))
+      throw new Error("A job change is still in progress. Try again shortly.");
+    this.mutations.add(id);
+    try {
+      return await this.dispatch(command, args);
+    } finally {
+      this.mutations.delete(id);
+    }
+  }
+  private async dispatch(
+    command: string,
+    args: Record<string, unknown>,
   ): Promise<unknown> {
     const id = String(args.id || "");
     switch (command) {
@@ -300,6 +329,8 @@ export class BrowserEngine {
       case "build_job": {
         const job = this.job(id);
         this.idle(job);
+        if (!["review", "failed"].includes(job.status))
+          throw new Error("Finish scanning before confirming the download.");
         const selected = new Set(args.selected as string[]);
         if (
           !selected.size ||
@@ -504,6 +535,8 @@ export class BrowserEngine {
         this.idle(job);
         const template = args.template as ArchiveTemplate;
         if (
+          job.phase !== "package" ||
+          !["completed", "failed", "paused"].includes(job.status) ||
           !templates.some((t) => t.id === template) ||
           !job.entries.some((e) => e.selected) ||
           job.entries.some((e) => e.selected && e.state !== "done")

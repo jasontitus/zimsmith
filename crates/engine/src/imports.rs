@@ -205,6 +205,10 @@ impl crate::Engine {
             let record = self.record(&id).await?;
             let mut job = record.job.lock().await;
             anyhow::ensure!(
+                !record.running.load(std::sync::atomic::Ordering::SeqCst),
+                "Import files are already being prepared"
+            );
+            anyhow::ensure!(
                 ["paused", "failed", "importing"].contains(&job.status.as_str()),
                 "Import is already running or finished"
             );
@@ -287,11 +291,11 @@ impl crate::Engine {
             "Import chunks must be at most 256 KB"
         );
         let record = self.record(id).await?;
+        let mut job = record.job.lock().await;
         anyhow::ensure!(
             !record.running.load(std::sync::atomic::Ordering::SeqCst),
             "Import files are already being prepared"
         );
-        let mut job = record.job.lock().await;
         let state = job.import.as_ref().context("This is not an import")?;
         anyhow::ensure!(
             !state.finished && job.status == "importing",
@@ -349,6 +353,11 @@ impl crate::Engine {
     pub async fn finish_import(&self, id: &str) -> Result<Job> {
         use std::sync::atomic::Ordering;
         let record = self.record(id).await?;
+        let job = record.job.lock().await;
+        anyhow::ensure!(
+            job.status == "importing" && job.import.as_ref().is_some_and(|s| !s.finished),
+            "Import is not ready to finalize"
+        );
         anyhow::ensure!(
             record
                 .running
@@ -364,6 +373,7 @@ impl crate::Engine {
         }
         let _guard = Guard(record.clone());
         record.import_cancel.store(false, Ordering::SeqCst);
+        drop(job);
         let result = self.finalize_import(id).await;
         if let Err(error) = &result {
             record.import_cancel.store(true, Ordering::SeqCst);
