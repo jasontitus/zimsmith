@@ -44,9 +44,9 @@ def crawl(item, args):
             "max_resource_mb": args.resource_mb,
             "language": "eng", "description": "Bounded live-site compatibility test",
             "creator": "Zimsmith", "include_assets": True,
-            "capture": {"max_download_mb": 30, "auto_render_javascript": False},
+            "capture": {"max_download_mb": args.download_mb, "auto_render_javascript": False},
         })
-        while time.monotonic() - started < 150:
+        while time.monotonic() - started < args.timeout_seconds:
             job = api(args.api, "/jobs/" + job["id"])
             if job["status"] == "review":
                 selected = [e["id"] for e in job["entries"]
@@ -86,12 +86,21 @@ def crawl(item, args):
     }
 
 
+def positive_int(value):
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return number
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--api", default="http://127.0.0.1:8793/api")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--site", choices=SITES, action="append", help="Only test these sites")
-    parser.add_argument("--resource-mb", type=int, choices=range(1, 31), default=4)
+    parser.add_argument("--resource-mb", type=positive_int, default=4)
+    parser.add_argument("--download-mb", type=positive_int, default=30)
+    parser.add_argument("--timeout-seconds", type=positive_int, default=150)
     args = parser.parse_args()
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:

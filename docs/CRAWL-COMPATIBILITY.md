@@ -19,6 +19,17 @@ Each crawl allowed three pages, one link level, 1,000 ms page spacing, a 4 MB re
 
 Three sites completed normally. Five more produced ZIMs through the existing **Build with available files** operation after the crawl stopped. Recovery made zero further requests, verified by unchanged request counters. All eight outputs passed checksum and directory-structure validation. Their reports disclose omitted assets. The captured HTML and resources were readable by the ZIM library; visual fidelity and video playback were not manually verified in a reader for this matrix. A valid ZIM can still contain an incomplete page.
 
+## Follow-up with a 200 MB budget
+
+Reran CNN and NASA on 2026-11-08 with the 0.2.12 native engine, a 200 MB download budget, a 50 MB per-resource limit, and a five-minute deadline. Kept the original three-page scope, request spacing, and robots rules. Both runs stayed below the new budget.
+
+| Site | Saved pages | Downloaded MB | Recovered ZIM MB | What stopped the normal build                                     |
+| ---- | ----------: | ------------: | ---------------: | ----------------------------------------------------------------- |
+| CNN  |           3 |         34.79 |            17.02 | Five-minute deadline. Saved 287 assets and left 1,443 queued.     |
+| NASA |           3 |         52.33 |            50.87 | Eleven assets denied by robots rules. Saved the other 139 assets. |
+
+CNN's homepage was about 8.3 MB. The larger per-file limit let the scan proceed. Its media CDN accounted for 1,632 asset URLs across 232 distinct paths when grouped without query strings. NASA saved both images that exceeded the original per-file cap, at 14.25 MB and 4.99 MB. Both recovered archives passed checksum and directory-structure validation, with no further network requests during recovery.
+
 ## What this reveals
 
 - **Recovery matters.** A single missing font currently stops a normal build. The existing explicit recovery action works, but presenting it more clearly after nonessential asset failures would help.
@@ -38,9 +49,11 @@ ZIMSTUDIO_BIND=127.0.0.1:8793 cargo run -p zim-worker --locked
 
 # Terminal 2, after the worker is listening
 python3 scripts/test-live-sites.py --output /tmp/zimsmith-site-matrix/results.json
-# Optional targeted follow-up, with the same overall/time/page limits:
-python3 scripts/test-live-sites.py --site CNN --resource-mb 8 \
-  --output /tmp/zimsmith-site-matrix/cnn-followup.json
+# For the larger-budget follow-up, restart the worker with
+# ZIMSTUDIO_DATA_DIR=/tmp/zimsmith-site-matrix-200mb/jobs before running:
+python3 scripts/test-live-sites.py --site CNN --site NASA \
+  --download-mb 200 --resource-mb 50 --timeout-seconds 300 \
+  --output /tmp/zimsmith-site-matrix-200mb/results.json
 ```
 
 After stopping the worker, recover any failed/paused website downloads from available files only:
