@@ -1,0 +1,5 @@
+Keep eligible CDN downloads running in parallel, with configurable concurrency and active-request progress. Improve numeric settings entry and apply edited request delays when resuming.
+
+Recover ZIM packaging when page titles contain tabs or newlines. Retry the failed build using saved downloads.
+
+Prevent overlapping import preparation, refresh, and rebuild operations. Reject build commands outside valid lifecycle states. Includes state-machine documentation and regression tests.
