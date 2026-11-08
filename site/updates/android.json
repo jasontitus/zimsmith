@@ -4,15 +4,15 @@
   "channel": "direct",
   "releases": [
     {
-      "version": "0.2.10",
-      "version_code": 2010,
+      "version": "0.2.11",
+      "version_code": 2011,
       "abi": "arm64-v8a",
       "min_sdk": 24,
-      "url": "https://github.com/jasontitus/zimsmith/releases/download/v0.2.10/Zimsmith-0.2.10-arm64-v8a-b91b4f9bcea9.apk",
-      "sha256": "b91b4f9bcea9c883a81b3bf75d4e1a7798d3b1cb33a1776c183180f4c12f5d07",
+      "url": "https://github.com/jasontitus/zimsmith/releases/download/v0.2.11/Zimsmith-0.2.11-arm64-v8a-5a00cf3ea5ba.apk",
+      "sha256": "5a00cf3ea5ba9f267c8a431b32a01a11d9216761a94426fd533dd6393f9d8cf6",
       "certificate_sha256": "f05a21df94164c0695b4e422bb413e2b7e5971ef44ecab3e2666faacb287aa89",
-      "size_bytes": 40606349,
-      "notes": "Restore saved video previews on website pages, including Home and About, and on generated video pages. Keep previews visible in Kiwix Apple even when it removes native video posters. One tap starts playback and clears the image.\n\nRebuild an existing collection to apply the repair using saved artwork and videos. Preserve native playback controls, captions, and the 0.2.9 MP4 compatibility fix."
+      "size_bytes": 40934029,
+      "notes": "Keep eligible CDN downloads running in parallel, with configurable concurrency and active-request progress. Improve numeric settings entry and apply edited request delays when resuming.\n\nRecover ZIM packaging when page titles contain tabs or newlines. Retry the failed build using saved downloads.\n\nPrevent overlapping import preparation, refresh, and rebuild operations. Reject build commands outside valid lifecycle states. Includes state-machine documentation and regression tests."
     }
   ]
 }
