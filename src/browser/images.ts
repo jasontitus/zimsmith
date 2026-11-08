@@ -1,4 +1,6 @@
-function fromSrcset(value: string): string | undefined {
+import { freezeImageUrls } from "./css";
+
+function candidates(value: string) {
   let rest = value.trim();
   const candidates: { url: string; score: number }[] = [];
   while (rest && candidates.length < 100) {
@@ -21,32 +23,53 @@ function fromSrcset(value: string): string | undefined {
         : 800;
     if (Number.isFinite(score) && score > 0) candidates.push({ url, score });
   }
-  candidates.sort((a, b) => a.score - b.score);
-  return (
-    candidates.filter((c) => c.score <= 1600).at(-1)?.url || candidates[0]?.url
-  );
+  return candidates;
+}
+
+function fromSrcset(value: string): string | undefined {
+  const options = candidates(value).sort((a, b) => a.score - b.score);
+  return options.filter((c) => c.score <= 1600).at(-1)?.url || options[0]?.url;
 }
 export function prepareImages(document: Document) {
   for (const img of document.querySelectorAll("img")) {
     const attr = (name: string) => img.getAttribute(name)?.trim() || undefined;
+    const picture = img.parentElement?.matches("picture")
+      ? img.parentElement
+      : null;
+    const sets = Array.from(picture?.querySelectorAll("source") || []).flatMap(
+      (element) => [
+        element.getAttribute("data-srcset"),
+        element.getAttribute("srcset"),
+      ],
+    );
     let source =
       ["data-src", "data-original", "data-lazy-src"].map(attr).find(Boolean) ||
       fromSrcset(attr("data-srcset") || attr("srcset") || "");
     if (
       !source &&
       (!attr("src") || attr("src")!.startsWith("data:")) &&
-      img.parentElement?.tagName.toLowerCase() === "picture"
+      picture
     ) {
-      for (const candidate of img.parentElement.querySelectorAll("source")) {
-        source = fromSrcset(
-          candidate.getAttribute("data-srcset") ||
-            candidate.getAttribute("srcset") ||
-            "",
-        );
+      for (const set of sets) {
+        source = fromSrcset(set || "");
         if (source) break;
       }
     }
     if (source) img.setAttribute("src", source);
+    const chosen = attr("src"),
+      style = attr("style");
+    if (chosen && style && !chosen.startsWith("data:")) {
+      const variants = new Set(
+        [...sets, attr("srcset"), attr("data-srcset")]
+          .flatMap((set) => candidates(set || ""))
+          .map(({ url }) => url),
+      );
+      if (variants.size)
+        img.setAttribute("style", freezeImageUrls(style, variants, chosen));
+    }
     img.removeAttribute("loading");
   }
+  document
+    .querySelectorAll("picture > source")
+    .forEach((source) => source.remove());
 }

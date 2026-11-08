@@ -146,6 +146,7 @@ export async function rewritePage(
       element.tagName.toLowerCase() === "style"
         ? "stylesheet"
         : "declarationList",
+      (url) => !!job.resources?.[url]?.done,
     );
     if (element.tagName.toLowerCase() === "style")
       element.textContent = rewritten;

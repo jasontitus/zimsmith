@@ -160,3 +160,32 @@ test("saved product and lazy images become visible without removing unrelated cl
   await expect(page.getByAltText("Lazy photo")).toHaveClass("photo lazyloaded");
   await expect(page.getByText("Keep hidden")).toBeHidden();
 });
+
+test("offline page uses a single picture URL and preserves separate font faces", async () => {
+  const html = `<html><head><style>@media screen {@font-face{font-family:test;src:local("Test"),url('/test.ttf') format('truetype'),url('/test.woff2') format('woff2')}} @font-face{font-family:test;font-weight:700;src:url('/bold.woff2')}</style></head><body><picture><source srcset="/photo.webp?crop=a,b 1x, /photo-large.webp 2x"><img src="/photo.jpg" style="--photo:url('/photo.webp?crop=a,b');--retina:url('/photo-large.webp');background-image:url('/overlay.svg')"></picture></body></html>`;
+  const requested = new Set<string>();
+  const saved = await rewritePage(
+    html,
+    { url: "https://example.test/" } as BrowserEntry,
+    {
+      config: { include_assets: true },
+      entries: [],
+      resources: { "https://example.test/test.ttf": { done: true } },
+      archive_template: "atlas",
+    } as unknown as BrowserJob,
+    async (url) => {
+      const name = new URL(url).pathname.slice(1);
+      requested.add(name);
+      return `saved-${name}`;
+    },
+  );
+  expect([...requested].sort()).toEqual([
+    "bold.woff2",
+    "overlay.svg",
+    "photo.jpg",
+    "test.ttf",
+  ]);
+  expect(saved).toContain("saved-photo.jpg");
+  expect(saved).toContain('local("Test")');
+  expect(saved).not.toContain("photo-large.webp");
+});

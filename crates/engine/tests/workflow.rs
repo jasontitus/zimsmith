@@ -1901,3 +1901,57 @@ async fn import_commands_preserve_finalizer_ownership_and_paused_state() {
     assert!(engine.finish_import(&job.id).await.is_err());
     assert_eq!(engine.get(&job.id).await.unwrap().status, "review");
 }
+
+#[tokio::test]
+async fn crawl_saves_one_image_and_font_variant_and_reports_unavailable_assets() {
+    let app = Router::new()
+        .route("/robots.txt", get(|| async { "User-agent: *\nDisallow: /denied.png" }))
+        .route("/", get(|| async { Html(r#"<title>Variants</title><link rel="stylesheet" href="/fonts.css"><picture><source srcset="/photo.webp?crop=one,two 1x, /photo-large.webp 2x"><img src="/photo.jpg" style="--responsive:url('/photo.webp?crop=one,two');--retina:url('/photo-large.webp')"></picture><img src="/missing.png"><img src="/denied.png">"#) }))
+        .route("/fonts.css", get(|| async { ([("Content-Type", "text/css")], r#"@media screen {@font-face {font-family:test;src:local("Test"),url("/font.ttf") format("truetype"),url("/font.woff2") format("woff2");font-weight:400}} @font-face{font-family:test;src:url('/bold.woff2');font-weight:700}"#) }))
+        .route("/photo.jpg", get(|| async { ([("Content-Type", "image/jpeg")], "photo") }))
+        .route("/font.woff2", get(|| async { ([("Content-Type", "font/woff2")], "regular") }))
+        .route("/bold.woff2", get(|| async { ([("Content-Type", "font/woff2")], "bold") }))
+        .route("/missing.png", get(|| async { StatusCode::NOT_FOUND }))
+        .fallback(|| async { StatusCode::BAD_REQUEST });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let root = format!("http://{}/", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let temp = tempfile::tempdir().unwrap();
+    let engine = Engine::open(temp.path()).await.unwrap();
+    engine
+        .update_settings(Settings {
+            auto_start_small_jobs: false,
+            ..Settings::default()
+        })
+        .await
+        .unwrap();
+    let job = engine.create(config(root.clone())).await.unwrap();
+    let review = wait(&engine, &job.id, "review").await;
+    engine
+        .build(
+            &job.id,
+            review.entries.iter().map(|e| e.id.clone()).collect(),
+        )
+        .await
+        .unwrap();
+    let done = wait(&engine, &job.id, "completed").await;
+    let report = done.capture_report.unwrap();
+    assert_eq!(report.saved_assets, 4);
+    assert_eq!(report.omitted_assets, 2);
+    assert_eq!(report.failed_assets, 2);
+    assert!(!done.resources.contains_key(&format!("{root}font.ttf")));
+    let photo = &done.resources[&format!("{root}photo.jpg")].path;
+    let archive = zimru::Archive::open(done.output.unwrap()).unwrap();
+    let html = archive
+        .get_text(&format!("{}.html", review.entries[0].id))
+        .unwrap();
+    assert!(html.contains(photo));
+    assert!(!html.contains("photo-large.webp"));
+    let stylesheet = archive
+        .get_text(&done.resources[&format!("{root}fonts.css")].path)
+        .unwrap();
+    assert!(stylesheet.contains("local(\"Test\")"));
+    assert!(stylesheet.contains(&done.resources[&format!("{root}font.woff2")].path));
+    assert!(!stylesheet.contains("font.ttf"));
+    server.abort();
+}

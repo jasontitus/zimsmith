@@ -13,6 +13,10 @@ interface Host {
 }
 export class Paused extends Error {}
 export class ExcludedAsset extends Error {}
+class RobotsDenied extends Error {}
+
+export const unavailableAsset = (reason: string) =>
+  reason.startsWith("robots.txt disallows ") || /^HTTP (404|410) /.test(reason);
 export class Network {
   private hosts = new Map<string, Host>();
   constructor(
@@ -201,7 +205,7 @@ export class Network {
     }
     const policy = robotsParser(`${origin}/robots.txt`, host.robots);
     if (policy.isAllowed(url, "Zimsmith") === false)
-      throw new Error(`robots.txt disallows ${new URL(url).pathname}`);
+      throw new RobotsDenied(`robots.txt disallows ${new URL(url).pathname}`);
     const declared = Math.max(0, policy.getCrawlDelay("Zimsmith") || 0) * 1000;
     if (fetched && declared > baseline) {
       host.next = Math.max(host.next, Date.now() + declared);
@@ -283,7 +287,11 @@ export class Network {
     const delay = await this.policy(
       url,
       requestDelay(url, this.job.config.delay_ms, asset),
-    );
+    ).catch((error) => {
+      if (asset && error instanceof RobotsDenied)
+        throw new ExcludedAsset(error.message);
+      throw error;
+    });
     const hash = new Uint8Array(
       await crypto.subtle.digest("SHA-256", new TextEncoder().encode(url)),
     );
@@ -318,9 +326,10 @@ export class Network {
       }
       if (!response.ok) {
         await response.body?.cancel();
-        throw new Error(
-          `HTTP ${response.status} ${response.statusText}: ${new URL(url).pathname}`,
-        );
+        const message = `HTTP ${response.status} ${response.statusText}: ${new URL(url).pathname}`;
+        if (asset && (response.status === 404 || response.status === 410))
+          throw new ExcludedAsset(message);
+        throw new Error(message);
       }
       if (
         asset &&

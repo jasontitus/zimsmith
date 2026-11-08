@@ -1,5 +1,5 @@
 //! Tokenize CSS references without interpreting text inside strings/data SVGs.
-use cssparser::{Parser, ParserInput, Token};
+use cssparser::{Delimiter, Parser, ParserInput, Token};
 
 pub struct Reference {
     pub start: usize,
@@ -66,6 +66,119 @@ pub fn local(value: &str) -> bool {
         || value
             .get(..5)
             .is_some_and(|s| s.eq_ignore_ascii_case("data:"))
+}
+
+// Each src list describes interchangeable encodings of one face. Different
+// weights, styles and unicode ranges live in separate rules and stay separate.
+pub fn compact_font_sources(css: &str, saved: impl Fn(&str) -> bool) -> String {
+    fn walk<'i>(
+        input: &mut Parser<'i, '_>,
+        edits: &mut Vec<(usize, usize, String)>,
+        saved: &impl Fn(&str) -> bool,
+        depth: usize,
+    ) {
+        if depth > 64 {
+            return;
+        }
+        let mut font_face = false;
+        while let Ok(token) = input.next().cloned() {
+            match token {
+                Token::AtKeyword(name) => font_face = name.eq_ignore_ascii_case("font-face"),
+                Token::Semicolon => font_face = false,
+                Token::CurlyBracketBlock => {
+                    let _ = input.parse_nested_block::<_, _, ()>(|block| {
+                        if font_face {
+                            compact_face(block, edits, saved);
+                        } else {
+                            walk(block, edits, saved, depth + 1);
+                        }
+                        Ok(())
+                    });
+                    font_face = false;
+                }
+                _ => {}
+            }
+        }
+    }
+    fn compact_face<'i>(
+        block: &mut Parser<'i, '_>,
+        edits: &mut Vec<(usize, usize, String)>,
+        saved: &impl Fn(&str) -> bool,
+    ) {
+        while !block.is_exhausted() {
+            let _ = block.parse_until_after::<_, _, ()>(Delimiter::Semicolon, |declaration| {
+                declaration.expect_ident_matching("src")?;
+                declaration.expect_colon()?;
+                let start = declaration.position().byte_index();
+                let alternatives = declaration.parse_comma_separated::<_, _, ()>(|part| {
+                    let start = part.position();
+                    while part.next().is_ok() {}
+                    Ok(part.slice_from(start))
+                })?;
+                let end = declaration.position().byte_index();
+                let sources: Vec<_> = alternatives.iter().map(|part| references(part)).collect();
+                if sources.iter().any(|refs| refs.len() > 1)
+                    || alternatives
+                        .iter()
+                        .any(|part| part.to_ascii_lowercase().contains("tech("))
+                {
+                    return Ok(());
+                }
+                let remote: Vec<_> = sources
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, refs)| {
+                        let url = &refs.first()?.value;
+                        (!local(url)).then_some((i, url.as_str()))
+                    })
+                    .collect();
+                if remote.len() < 2 {
+                    return Ok(());
+                }
+                let chosen = remote
+                    .iter()
+                    .min_by_key(|(i, url)| {
+                        let path = url
+                            .split(['?', '#'])
+                            .next()
+                            .unwrap_or(url)
+                            .to_ascii_lowercase();
+                        let format = if path.ends_with(".woff2") {
+                            0
+                        } else if path.ends_with(".woff") {
+                            1
+                        } else if path.ends_with(".ttf") || path.ends_with(".otf") {
+                            2
+                        } else {
+                            3
+                        };
+                        (!saved(url), format, *i)
+                    })
+                    .unwrap()
+                    .0;
+                let kept = alternatives
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i == chosen || !remote.iter().any(|(index, _)| index == i))
+                    .map(|(_, part)| part.trim())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                edits.push((start, end, format!(" {kept}")));
+                Ok(())
+            });
+        }
+    }
+    let mut input = ParserInput::new(css);
+    let mut edits = Vec::new();
+    walk(&mut Parser::new(&mut input), &mut edits, &saved, 0);
+    if edits.is_empty() {
+        return css.into();
+    }
+    let mut result = css.to_owned();
+    for (start, end, value) in edits.into_iter().rev() {
+        result.replace_range(start..end, &value);
+    }
+    result
 }
 
 #[cfg(test)]

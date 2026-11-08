@@ -168,6 +168,15 @@ impl std::fmt::Display for RetryFailure {
 impl std::error::Error for RetryFailure {}
 
 #[derive(Debug)]
+struct UnavailableAsset(String);
+impl std::fmt::Display for UnavailableAsset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+impl std::error::Error for UnavailableAsset {}
+
+#[derive(Debug)]
 struct UnavailablePolicy {
     message: String,
     passive_fallback: bool,
@@ -666,10 +675,9 @@ impl<'a> Network<'a> {
         }
         let policy = &robots[&origin];
         let mut matcher = robotstxt::DefaultMatcher::default();
-        anyhow::ensure!(
-            matcher.one_agent_allowed_by_robots(&policy.text, "ZimStudio", url.as_str()),
-            "Blocked by robots.txt: {url}"
-        );
+        if !matcher.one_agent_allowed_by_robots(&policy.text, "ZimStudio", url.as_str()) {
+            return Err(UnavailableAsset(format!("Blocked by robots.txt: {url}")).into());
+        }
         Ok(baseline.max(policy.delay))
     }
     pub async fn get(&self, url: &Url) -> Result<(Url, String, Vec<u8>)> {
@@ -883,6 +891,9 @@ impl<'a> Network<'a> {
                     "Cross-origin sitemap redirect ignored before requesting its destination"
                 );
                 continue;
+            }
+            if asset && matches!(status, StatusCode::NOT_FOUND | StatusCode::GONE) {
+                return Err(UnavailableAsset(format!("HTTP {status}: {url}")).into());
             }
             anyhow::ensure!(status.is_success(), "HTTP {status}: {url}");
             let mime = headers
@@ -1100,7 +1111,10 @@ pub fn inspect(html: &str, base: &Url) -> PageData {
             .attr("style")
             .map(str::to_string)
             .unwrap_or_else(|| element.inner_html());
-        assets.extend(css_urls(&css, &base));
+        assets.extend(css_urls(
+            &crate::css::compact_font_sources(&css, |_| false),
+            &base,
+        ));
     }
     assets.sort();
     assets.dedup();
@@ -1442,7 +1456,8 @@ async fn save_resource(record: &Record, resource: &Resource, asset: FetchedResou
     let cache = record.dir.join("cache");
     let dependencies = if mime.contains("text/css") {
         let bytes = tokio::fs::read(cache.join(&resource.path)).await?;
-        css_urls(&String::from_utf8_lossy(&bytes), &final_url)
+        let css = crate::css::compact_font_sources(&String::from_utf8_lossy(&bytes), |_| false);
+        css_urls(&css, &final_url)
     } else {
         vec![]
     };
@@ -1630,6 +1645,8 @@ async fn download_with_network(
                             let r = j.resources.get_mut(&resource.url).unwrap();
                             r.state = if error.is::<crate::capture::Excluded>() {
                                 "excluded"
+                            } else if error.is::<UnavailableAsset>() {
+                                "skipped"
                             } else {
                                 "failed"
                             }
@@ -1705,7 +1722,20 @@ pub async fn repair_saved_stylesheets(record: &Record) -> Result<()> {
         )
         .await
         .unwrap_or_else(|_| resource.url.clone());
-        let dependencies = css_urls(&css, &http_url(&base)?);
+        let base = http_url(&base)?;
+        let css = if snapshot.import.is_none() {
+            crate::css::compact_font_sources(&css, |value| {
+                resolve(&base, value).is_some_and(|url| {
+                    snapshot
+                        .resources
+                        .get(url.as_str())
+                        .is_some_and(|r| r.state == "done")
+                })
+            })
+        } else {
+            css
+        };
+        let dependencies = css_urls(&css, &base);
         if dependencies != resource.dependencies {
             changes.push((resource.url.clone(), dependencies));
         }
@@ -1713,12 +1743,18 @@ pub async fn repair_saved_stylesheets(record: &Record) -> Result<()> {
     if changes.is_empty() {
         return Ok(());
     }
-    record.change(|job| {
-        for (url, dependencies) in changes { if let Some(resource) = job.resources.get_mut(&url) { resource.dependencies = dependencies; } }
-        let needed = needed_resources(job);
-        job.resources.retain(|url,_|needed.contains(url));
-        job.log("info","Updated saved stylesheet references locally; embedded SVG masks do not require downloads.");
-    }).await
+    record
+        .change(|job| {
+            for (url, dependencies) in changes {
+                if let Some(resource) = job.resources.get_mut(&url) {
+                    resource.dependencies = dependencies;
+                }
+            }
+            let needed = needed_resources(job);
+            job.resources.retain(|url, _| needed.contains(url));
+            job.log("info", "Updated saved stylesheet dependencies.");
+        })
+        .await
 }
 
 fn add_resource(job: &mut Job, url: &str) {
@@ -1760,8 +1796,10 @@ pub fn css_urls(css: &str, base: &Url) -> Vec<String> {
 }
 
 pub fn rewrite_css(css: &str, base: &Url, paths: &BTreeMap<String, String>) -> String {
-    let mut out = css.to_string();
-    for reference in crate::css::references(css).into_iter().rev() {
+    let mut out = crate::css::compact_font_sources(css, |value| {
+        resolve(base, value).is_some_and(|url| paths.contains_key(url.as_str()))
+    });
+    for reference in crate::css::references(&out).into_iter().rev() {
         if crate::css::local(&reference.value) {
             continue;
         }

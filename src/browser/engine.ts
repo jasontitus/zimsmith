@@ -20,7 +20,7 @@ import {
   rewritePage,
   templates,
 } from "./content";
-import { Network, Paused, ExcludedAsset } from "./network";
+import { Network, Paused, ExcludedAsset, unavailableAsset } from "./network";
 import {
   approvedFiles,
   diskName,
@@ -509,6 +509,7 @@ export class BrowserEngine {
         for (const resource of Object.values(job.resources))
           resource.revalidate = true;
         for (const entry of job.entries) delete job.resources[entry.url];
+        job.omissions = {};
         job.entries = [];
         job.visited = [];
         job.queue = [
@@ -911,6 +912,7 @@ export class BrowserEngine {
       await this.save(job);
     }
     if (job.phase !== "package") return;
+    const previousOmissions = job.omissions;
     job.omissions = {};
     const items = new Map<string, ZimItem>();
     const add = (
@@ -937,6 +939,9 @@ export class BrowserEngine {
         );
       let receipt;
       try {
+        const previous = previousOmissions?.[url];
+        if (previous && unavailableAsset(previous))
+          throw new ExcludedAsset(previous);
         if (job.import && !job.resources[url]?.done)
           throw new ExcludedAsset("Not available in the saved-file import");
         receipt = await net.download(url, undefined, true);
@@ -947,7 +952,7 @@ export class BrowserEngine {
         this.log(
           job,
           "info",
-          `Excluded asset by capture settings: ${new URL(url).pathname}`,
+          `Omitted asset ${new URL(url).pathname}: ${error.message}`,
         );
         return "";
       }
@@ -977,7 +982,13 @@ export class BrowserEngine {
         add(
           path,
           "text/css",
-          await rewriteCss(await file.text(), url, (u) => asset(u, depth + 1)),
+          await rewriteCss(
+            await file.text(),
+            url,
+            (u) => asset(u, depth + 1),
+            "stylesheet",
+            (u) => !!job.resources?.[u]?.done,
+          ),
         );
       } else add(path, receipt.mime, file);
       return path;

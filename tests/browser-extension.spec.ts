@@ -106,14 +106,14 @@ test("extension crawls without CORS, pauses through 429/reload, and exports/rebu
     // Intentionally no CORS headers: this must use extension privileges.
     if (path === "/robots.txt") {
       response.end(
-        "User-agent: *\nDisallow: /source/private\nCrawl-delay: 1\n",
+        "User-agent: *\nDisallow: /source/private\nDisallow: /blocked.svg\nCrawl-delay: 1\n",
       );
       return;
     }
     if (path === "/source/" || path === "/source/other") {
       response.setHeader("Content-Type", "text/html");
       response.end(
-        `<html><head><title>${path.endsWith("other") ? "Molluscs and tide pools" : "Field guide"}</title><link rel="stylesheet" href="/main.css"></head><body onload="alert('bad')"><h1>Offline molluscs</h1><script>fetch('https://never.example/track')</script><a href="/source/other">Other</a><a href="/source/private">Private</a><a href="/outside">Outside scope</a><a href="javascript:alert(1)">Bad</a><img src="/art.svg"></body></html>`,
+        `<html><head><title>${path.endsWith("other") ? "Molluscs and tide pools" : "Field guide"}</title><link rel="stylesheet" href="/main.css"></head><body onload="alert('bad')"><h1>Offline molluscs</h1><script>fetch('https://never.example/track')</script><a href="/source/other">Other</a><a href="/source/private">Private</a><a href="/outside">Outside scope</a><a href="javascript:alert(1)">Bad</a><img src="/art.svg"><img src="/blocked.svg"><img src="/missing.svg"></body></html>`,
       );
       return;
     }
@@ -222,6 +222,9 @@ test("extension crawls without CORS, pauses through 429/reload, and exports/rebu
     expect(art).toHaveLength(2);
     expect(art[1].time - art[0].time).toBeGreaterThanOrEqual(5000);
     expect(hits.filter((h) => h.path === "/source/private")).toEqual([]);
+    expect(hits.filter((h) => h.path === "/blocked.svg")).toEqual([]);
+    expect(hits.filter((h) => h.path === "/missing.svg")).toHaveLength(1);
+    expect((await jobs(page))[0]?.capture_report?.omitted_assets).toBe(2);
     await mkdir("test-results/browser-extension", { recursive: true });
     const event = page.waitForEvent("download");
     await page

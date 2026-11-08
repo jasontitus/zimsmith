@@ -2,6 +2,7 @@ import type { CaptureSummary } from "../types";
 import { discover } from "./content";
 import { escape, type BrowserJob } from "./model";
 import { readFile } from "./storage";
+import { unavailableAsset } from "./network";
 const label = (value: string) => {
   try {
     const u = new URL(value);
@@ -26,7 +27,8 @@ export async function captureReport(
     omitted_assets: omitted.length,
     excluded_assets: omitted.filter(([, reason]) => reason.includes("settings"))
       .length,
-    failed_assets: 0,
+    failed_assets: omitted.filter(([, reason]) => unavailableAsset(reason))
+      .length,
     online_links: 0,
     subtitle_tracks: 0,
     caption_gaps: 0,

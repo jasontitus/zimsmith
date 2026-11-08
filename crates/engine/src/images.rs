@@ -3,7 +3,7 @@ use anyhow::Result;
 use lol_html::{element, rewrite_str, RewriteStrSettings};
 use scraper::{Html, Selector};
 
-fn srcset(value: &str) -> Option<String> {
+fn candidates(value: &str) -> Vec<(String, f64)> {
     // A URL token ends at whitespace, not an arbitrary comma inside its path.
     let mut rest = value.trim();
     let mut candidates = Vec::new();
@@ -36,6 +36,11 @@ fn srcset(value: &str) -> Option<String> {
             candidates.push((url.to_owned(), score));
         }
     }
+    candidates
+}
+
+fn srcset(value: &str) -> Option<String> {
+    let mut candidates = candidates(value);
     candidates.sort_by(|a, b| a.1.total_cmp(&b.1));
     candidates
         .iter()
@@ -51,7 +56,21 @@ pub fn prepare(html: &str) -> Result<String> {
         .select(&Selector::parse("img").unwrap())
         .map(|img| {
             let attr = |name| img.value().attr(name).filter(|s| !s.trim().is_empty());
-            ["data-src", "data-original", "data-lazy-src"]
+            let picture = img
+                .parent()
+                .and_then(scraper::ElementRef::wrap)
+                .filter(|parent| parent.value().name() == "picture");
+            let selector = Selector::parse("source").unwrap();
+            let sets: Vec<_> = picture
+                .iter()
+                .flat_map(|p| p.select(&selector))
+                .flat_map(|s| {
+                    [s.value().attr("data-srcset"), s.value().attr("srcset")]
+                        .into_iter()
+                        .flatten()
+                })
+                .collect();
+            let source = ["data-src", "data-original", "data-lazy-src"]
                 .into_iter()
                 .find_map(attr)
                 .map(str::to_owned)
@@ -64,37 +83,64 @@ pub fn prepare(html: &str) -> Result<String> {
                     if attr("src").is_some_and(|s| !s.starts_with("data:")) {
                         return None;
                     }
-                    let parent = img.parent()?.value().as_element()?;
-                    if parent.name() != "picture" {
-                        return None;
+                    sets.iter().copied().find_map(srcset)
+                });
+            let mut style = None;
+            if let (Some(chosen), Some(original_style)) =
+                (source.as_deref().or_else(|| attr("src")), attr("style"))
+            {
+                let variants: std::collections::HashSet<_> = sets
+                    .into_iter()
+                    .chain([attr("srcset"), attr("data-srcset")].into_iter().flatten())
+                    .flat_map(candidates)
+                    .map(|(url, _)| url)
+                    .collect();
+                if !variants.is_empty() && !chosen.starts_with("data:") {
+                    let mut replacement = "url(".to_owned();
+                    cssparser::serialize_string(chosen, &mut replacement).unwrap();
+                    replacement.push(')');
+                    let mut updated = original_style.to_owned();
+                    for reference in crate::css::references(original_style).into_iter().rev() {
+                        if variants.contains(&reference.value) && reference.value != chosen {
+                            updated.replace_range(reference.start..reference.end, &replacement);
+                        }
                     }
-                    scraper::ElementRef::wrap(img.parent()?)?
-                        .select(&Selector::parse("source").unwrap())
-                        .find_map(|s| {
-                            s.value()
-                                .attr("data-srcset")
-                                .or_else(|| s.value().attr("srcset"))
-                                .and_then(srcset)
-                        })
-                })
+                    if updated != original_style {
+                        style = Some(updated);
+                    }
+                }
+            }
+            (source, style)
         })
         .collect();
     let mut index = 0;
     let output = rewrite_str(
         html,
         RewriteStrSettings {
-            element_content_handlers: vec![element!("img", |el| {
-                if let Some(Some(source)) = sources.get(index) {
-                    if let Some(original) = el.get_attribute("src").filter(|s| s != source) {
-                        el.set_attribute("data-zim-original-src", &original)?;
+            element_content_handlers: vec![
+                element!("picture > source", |el| {
+                    el.remove();
+                    Ok(())
+                }),
+                element!("img", |el| {
+                    if let Some((source, style)) = sources.get(index) {
+                        if let Some(style) = style {
+                            el.set_attribute("style", style)?;
+                        }
+                        if let Some(source) = source {
+                            if let Some(original) = el.get_attribute("src").filter(|s| s != source)
+                            {
+                                el.set_attribute("data-zim-original-src", &original)?;
+                            }
+                            el.set_attribute("src", source)?;
+                        }
                     }
-                    el.set_attribute("src", source)?;
-                }
-                index += 1;
-                // Loading must not depend on scrolling, IntersectionObserver, or a script.
-                el.remove_attribute("loading");
-                Ok(())
-            })],
+                    index += 1;
+                    // Loading must not depend on scrolling, IntersectionObserver, or a script.
+                    el.remove_attribute("loading");
+                    Ok(())
+                }),
+            ],
             ..Default::default()
         },
     )?;

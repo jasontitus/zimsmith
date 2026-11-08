@@ -30,10 +30,21 @@ Reran CNN and NASA on 2026-11-08 with the 0.2.12 native engine, a 200 MB downloa
 
 CNN's homepage was about 8.3 MB. The larger per-file limit let the scan proceed. Its media CDN accounted for 1,632 asset URLs across 232 distinct paths when grouped without query strings. NASA saved both images that exceeded the original per-file cap, at 14.25 MB and 4.99 MB. Both recovered archives passed checksum and directory-structure validation, with no further network requests during recovery.
 
+## Retest after reducing redundant assets
+
+Replayed discovery on the same HTML saved in the earlier crawls. Counts are distinct asset URLs directly referenced by the pages, before following linked stylesheets.
+
+| Sample                 | Original asset URLs | Revised asset URLs | Original font URLs | Revised font URLs |
+| ---------------------- | ------------------: | -----------------: | -----------------: | ----------------: |
+| CNN, three pages       |               1,730 |                343 |                 17 |                17 |
+| The Guardian, one page |                 694 |                129 |                 45 |                15 |
+
+Fresh live crawls used a 200 MB budget, a 50 MB per-resource cap and 1,000 ms page spacing. The Guardian built a 1.64 MB ZIM in 120 seconds with 20 assets omitted. CNN paused at five minutes with one asset pending, then finished in another 11 seconds after resume. Its ZIM was 30.85 MB with 60 assets omitted. Both archives passed checksum and structure checks. The omissions were due to robots denials. Visual fidelity in a reader was outside this retest.
+
 ## What this reveals
 
-- **Recovery matters.** A single missing font currently stops a normal build. The existing explicit recovery action works, but presenting it more clearly after nonessential asset failures would help.
-- **Asset discovery overcollects.** The Guardian sample discovered hundreds of font/style resources, including alternative formats a browser would not necessarily download. Selecting appropriate font/image candidates is a useful future optimization. Greater parallelism alone does not fix this.
+- **Recovery matters.** The original crawl stopped on a single missing font. Linked assets that return 404 or 410 or are explicitly denied by robots rules now appear as omissions, and the captured pages can still build.
+- **Asset selection matters.** The original CNN and Guardian samples queued multiple variants of the same pictures and font faces. The crawler now freezes responsive pictures to one image and prefers one font encoding per face. Distinct font weights, styles and character ranges remain available.
 - **Limits need clear explanations.** CNN's overall scan error is generic; its item/log error identifies the resource cap. Surfacing that specific reason and the relevant setting would avoid confusion.
 - **Crawl policy affects completeness.** Third-party image/font hosts can have different robots policies than the page. Respecting those exclusions means some archives need missing-asset reports rather than repeated retries.
 - **Broader coverage is still needed.** This run did not exercise logged-in content, paywalls, full sites, native JavaScript rendering, or physical-phone playback. Deterministic tests separately cover JavaScript capture, 429 recovery, CDN concurrency, offline links, and media packaging.
