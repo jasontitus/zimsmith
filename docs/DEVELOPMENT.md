@@ -77,6 +77,8 @@ Tests cover scope, HTML/CSS rewriting, script removal, robots exclusions, no pre
 
 Template tests also check saved selection and job-level style snapshots, escaped metadata, bundled fonts inside real ZIMs, all four desktop/mobile layouts, working search and clear/empty states, archive navigation, and zero external subresource requests. Visual test outputs are under `test-results/archive-templates/`.
 
+The opt-in [live-site matrix](CRAWL-COMPATIBILITY.md) samples news, blogs, science, and documentation with bounded crawl budgets. WARC regression fixtures are generated locally; no captured third-party content is checked into the repository. Run `cargo test -p zim-engine --test warc_import --locked` and `npm run test:browser` for import coverage. WARC parsing uses the [Rust warc crate](https://docs.rs/warc/0.4.0/warc/) and [Webrecorder warcio.js](https://github.com/webrecorder/warcio.js), with the distributed license texts and package license declarations retained in `public/WARC-LICENSES.txt`.
+
 ## Sources updated on 2026-11-02
 
 - `yt-dlp`: cloned and pulled with `git pull --ff-only`; version `2026.10.26`, revision `b77c9304e1c4220cca450c583491904daf8455af`.

@@ -23,10 +23,12 @@ pub struct ImportState {
     pub file_count: usize,
 }
 #[derive(Clone)]
-struct Payload {
-    path: String,
-    file: std::path::PathBuf,
-    size: u64,
+pub(crate) struct Payload {
+    pub path: String,
+    pub file: std::path::PathBuf,
+    pub size: u64,
+    pub url: Option<String>,
+    pub mime: Option<String>,
 }
 
 pub fn logical_path(value: &str) -> Result<String> {
@@ -76,7 +78,12 @@ fn validate_files(files: &[ImportFile], config: &NewJob) -> Result<()> {
             "Duplicate import filename: {name}"
         );
         anyhow::ensure!(
-            file.size <= config.max_resource_mb * 1024 * 1024,
+            file.size
+                <= if crate::warc_import::recognized(&file.path) {
+                    MAX_TOTAL
+                } else {
+                    config.max_resource_mb * 1024 * 1024
+                },
             "Import file exceeds the per-file limit: {name}"
         );
         size = size
@@ -181,6 +188,8 @@ fn expand_zip(
             path: name,
             file: path,
             size: copied,
+            url: None,
+            mime: None,
         });
     }
     Ok(result)
@@ -405,6 +414,7 @@ impl crate::Engine {
             .map(|mb| mb * 1024 * 1024)
             .unwrap_or(MAX_TOTAL)
             .min(MAX_TOTAL);
+        let mut warc_budget_used = 0u64;
         for file in &import.files {
             let path = record.dir.join("uploads").join(web::key(&file.path));
             anyhow::ensure!(
@@ -412,7 +422,19 @@ impl crate::Engine {
                 "Import file is incomplete: {}",
                 file.path
             );
-            let files = if extension(&file.path) == "zip" {
+            let files = if crate::warc_import::recognized(&file.path) {
+                let output = record.dir.join("expanded").join(web::key(&file.path));
+                let file_cap = job.config.max_resource_mb * 1024 * 1024;
+                let control = record.clone();
+                let gzip = file.path.to_ascii_lowercase().ends_with(".gz");
+                let remaining = cap.saturating_sub(warc_budget_used);
+                let expanded = tokio::task::spawn_blocking(move || {
+                    crate::warc_import::expand(&path, gzip, &output, remaining, file_cap, control)
+                })
+                .await??;
+                warc_budget_used += expanded.budget_used;
+                expanded.payloads
+            } else if extension(&file.path) == "zip" {
                 let output = record.dir.join("expanded").join(web::key(&file.path));
                 let file_cap = job.config.max_resource_mb * 1024 * 1024;
                 let control = record.clone();
@@ -425,6 +447,8 @@ impl crate::Engine {
                     path: file.path.clone(),
                     file: path,
                     size: file.size,
+                    url: None,
+                    mime: None,
                 }]
             };
             for payload in files {
@@ -459,10 +483,18 @@ impl crate::Engine {
                     "files",
                 )
                 .await;
-            let url = local_url(&payload.path)?;
+            let url = match &payload.url {
+                Some(url) => web::http_url(url)?,
+                None => local_url(&payload.path)?,
+            };
             let id = web::key(url.as_str());
             let ext = extension(&payload.path);
-            if ["html", "htm", "xhtml"].contains(&ext.as_str()) {
+            let mime = payload.mime.clone().unwrap_or_else(|| {
+                mime_guess::from_path(&payload.path)
+                    .first_or_octet_stream()
+                    .to_string()
+            });
+            if ["text/html", "application/xhtml+xml"].contains(&mime.as_str()) {
                 anyhow::ensure!(
                     payload.size <= 8 * 1024 * 1024,
                     "Imported HTML exceeds the 8 MB parsing limit: {}",
@@ -510,9 +542,6 @@ impl crate::Engine {
                         "bin"
                     }
                 );
-                let mime = mime_guess::from_path(&payload.path)
-                    .first_or_octet_stream()
-                    .to_string();
                 let allowed =
                     job.config.capture.asset_url(&url) && job.config.capture.asset_mime(&mime);
                 let cache_path = record.dir.join("cache").join(&path);

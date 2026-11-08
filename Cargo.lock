@@ -573,7 +573,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a347dcabdae9c31b0825fd6a8bed285ec9c2acb89c47827126d52fa4f59cece3"
 dependencies = [
  "fnv",
- "uuid",
+ "uuid 1.29.0",
  "web-time",
 ]
 
@@ -617,8 +617,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
+ "js-sys",
  "num-traits",
  "serde",
+ "wasm-bindgen",
  "windows-link 0.2.1",
 ]
 
@@ -4317,7 +4319,7 @@ dependencies = [
  "serde",
  "serde_json",
  "url",
- "uuid",
+ "uuid 1.29.0",
 ]
 
 [[package]]
@@ -5098,7 +5100,7 @@ dependencies = [
  "thiserror 2.0.21",
  "time",
  "url",
- "uuid",
+ "uuid 1.29.0",
  "walkdir",
 ]
 
@@ -5227,7 +5229,7 @@ dependencies = [
  "toml 1.1.8+spec-1.1.0",
  "url",
  "urlpattern",
- "uuid",
+ "uuid 1.29.0",
  "walkdir",
 ]
 
@@ -5819,6 +5821,15 @@ checksum = "3a3b425286980a367278453f3b6d28cdcb134b574e5a35824a6ff5eebad50bb6"
 
 [[package]]
 name = "uuid"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc5cf98d8186244414c848017f0e2676b3fcb46807f6668a97dfe67359a3c4b7"
+dependencies = [
+ "getrandom 0.2.17",
+]
+
+[[package]]
+name = "uuid"
 version = "1.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4a0e2d11620c50695fe12bbbfde96b3477fe606e7284c22d505c12ce51214514"
@@ -5878,6 +5889,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec4cdd0dd910afe868b7ef477227d8d538b46b3075031afee8a9f2acb0a2ed0b"
 dependencies = [
  "try-lock",
+]
+
+[[package]]
+name = "warc"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3afd4100d197bbba734febd5eb3b854ebe6e5d42bde935f603a6732b9dedcc0d"
+dependencies = [
+ "chrono",
+ "nom",
+ "url",
+ "uuid 0.8.2",
 ]
 
 [[package]]
@@ -6783,7 +6806,9 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "cssparser 0.37.0",
+ "flate2",
  "futures-util",
+ "httparse",
  "httpdate",
  "lol_html",
  "md-5",
@@ -6803,7 +6828,8 @@ dependencies = [
  "tempfile",
  "tokio",
  "url",
- "uuid",
+ "uuid 1.29.0",
+ "warc",
  "xapianbuilder",
  "zimru",
  "zip",
@@ -6811,7 +6837,7 @@ dependencies = [
 
 [[package]]
 name = "zim-studio"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "anyhow",
  "atomic-write-file",

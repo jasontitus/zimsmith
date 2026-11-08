@@ -36,6 +36,9 @@ zip = { version = "=9.3.0", default-features = false, features = ["deflate"] }
 mime_guess = "2"
 base64 = "0.22"
 mp4-track = "=0.1.0"
+warc = { version = "=0.4.0", default-features = false }
+flate2 = "1"
+httparse = "1"
 
 [target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies]
 # QuickJS ships desktop bindings only; generate ABI-correct bindings for phones.

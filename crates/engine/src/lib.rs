@@ -18,6 +18,7 @@ mod sitemap;
 mod snapshot;
 pub mod templates;
 mod thumbnails;
+mod warc_import;
 pub mod web;
 pub mod youtube_audio;
 mod youtube_playlist;

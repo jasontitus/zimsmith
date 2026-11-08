@@ -1,0 +1,5 @@
+Import WARC and WARC.GZ captures locally, review their pages and media, and build searchable ZIMs. Preserve captured URLs, styles and images without fetching missing content online.
+
+Stream compressed captures with bounded memory and storage, reject damaged records, report omitted captures, and reuse uploads after interruption.
+
+Includes a ten-site compatibility report covering news, blogs, science and documentation, plus offline recovery checks.

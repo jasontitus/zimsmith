@@ -34,3 +34,5 @@ gitleaks dir /path/to/exported-staged-tree --redact --report-format json --repor
 ```
 
 Inspect any findings before publishing. A clean automated scan is evidence for the reviewed files, not a guarantee that a detector can recognize every kind of sensitive information. Private reports and scan configuration are not published.
+
+The 0.2.12 WARC release adds generated synthetic captures only. Live news/blog/science/documentation archives, manifests, and detailed logs remain outside the publication tree; the public compatibility report contains aggregate results and public site URLs. The exact staged source passed the publication scanner and Gitleaks before upload. WARC parser/decompression licenses are retained, including upstream author attribution. Release artifacts are scanned separately before upload.

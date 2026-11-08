@@ -10,7 +10,7 @@ Turn websites and media collections into searchable offline [ZIM archives](https
 - Preview first, pause/resume, and respect robots rules and rate limits.
 - Refresh collections; control URL scope, asset types, download budgets, and video quality.
 - Save YouTube captions, search transcripts, and jump to playback timestamps.
-- Import saved pages, media, folders, ZIPs, or website URL lists.
+- Import saved pages, media, folders, ZIPs, WARC captures, or website URL lists.
 - Build searchable ZIMs with reading, video gallery, or original website layouts.
 - Save/open archives and delete failed attempts.
 
@@ -47,6 +47,7 @@ For mobile setup, optional yt-dlp, and testing, see the [development guide](docs
 ## Documentation
 
 - [Usage, templates, and audio repair](docs/USAGE.md)
+- [Live-site compatibility results](docs/CRAWL-COMPATIBILITY.md)
 - [Browser and extension builds](docs/BROWSER.md)
 - [Android releases and updates](docs/ANDROID_RELEASES.md)
 - [Archive format, search, and crawl policy](docs/ARCHITECTURE.md)

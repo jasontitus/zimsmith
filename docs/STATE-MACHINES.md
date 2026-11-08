@@ -69,6 +69,23 @@ A visible terminal or paused status alone does not prove the worker released own
 
 Native edit also accepts review. Browser edit currently accepts failed/paused only. Imports require reselection while unfinished and reject ordinary resume. Native deletion may return deferred disk cleanup; browser orphan cleanup likewise retries at startup.
 
+## WARC import preparation (added 2026-11-08)
+
+Both engines expand WARC/WARC.GZ inside the existing unfinished-import owner reservation. Native record decoding runs in a blocking worker with cancellation checks; the browser worker checks its abort signal between stream chunks. Payloads are staged before the job becomes reviewable. Reading local captures never schedules network requests.
+
+| From                                                         | Event/guard                                 | To                                     | Invariant                                                                                            |
+| ------------------------------------------------------------ | ------------------------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| import/importing, uploaded lengths match                     | Finish reserves owner                       | import/importing, reading records      | No concurrent upload, reselect or second finalizer                                                   |
+| Reading header/body                                          | Valid complete response/resource            | Next record                            | Bounded headers, encoded stream, decoded body, record count and storage; original URL/MIME retained  |
+| Reading records                                              | Same URL captured again                     | Replace staged payload                 | Last complete record in input order wins; no mixed old/new body                                      |
+| Reading records                                              | Unsupported revisit/redirect/partial record | Next record + omission count           | Never present omitted body as a complete saved page                                                  |
+| Reading/preparing                                            | Malformed input or size/storage failure     | import/failed                          | Import stays unfinished; ownership released; uploaded source retained                                |
+| Reading/preparing                                            | Pause/cancel                                | import/paused or failed; owner unwinds | Reselection waits for owner release; uploaded offsets retained                                       |
+| import/paused or failed, owner released                      | Reselect same paths/sizes                   | import/importing                       | Limits may be changed; extraction restarts from source rather than resuming a partial decoded record |
+| All records prepared + at least one page/media + limits pass | Finish commit                               | scan/review                            | Finished flag and entries/resources published together; explicit review remains required             |
+
+`crates/engine/tests/warc_import.rs` verifies plain/multi-member compressed captures through validated ZIM packaging, URL/asset rewriting, duplicate replacement, omission warnings, malformed input, decoded limits, larger containers and retry with retained uploads. `tests/warc-import.spec.ts` exercises the browser dispatcher/parser; `tests/browser-imports.spec.ts` imports a compressed WARC through the real UI/worker and independently validates its exported ZIM, with no source-network requests. The WARC-specific browser test also pauses during preparation, rejects reselect while ownership is held, then retries using the retained upload. Existing native ownership regression tests apply to WARC through the same import finalizer. Local 0.2.12 validation passed 92 native tests (6 intentionally ignored) and 33 browser/extension tests.
+
 ## Entries, assets, and approval
 
 | Machine                  | States                                                  | Transitions and invariants                                                                                                                                                                                                                           |

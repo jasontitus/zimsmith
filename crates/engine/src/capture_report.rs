@@ -101,7 +101,10 @@ pub async fn write(
     for warning in job
         .logs
         .iter()
-        .filter(|log| log.message.contains("as browser assets."))
+        .filter(|log| {
+            log.message.contains("as browser assets.")
+                || log.message.starts_with("WARC import omitted")
+        })
         .map(|log| log.message.clone())
         .collect::<BTreeSet<_>>()
         .into_iter()

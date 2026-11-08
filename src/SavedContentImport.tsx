@@ -89,7 +89,7 @@ export function SavedContentImport({
       setTitle(
         (
           selected[0].webkitRelativePath.split("/")[0] || selected[0].name
-        ).replace(/\.(zip|html?)$/i, ""),
+        ).replace(/\.(warc(?:\.gz)?|zip|html?)$/i, ""),
       );
   };
   const start = async () => {
@@ -206,8 +206,9 @@ export function SavedContentImport({
       </summary>
       <div className="import-content">
         <p>
-          Package saved HTML with its assets, media, folders, or ZIPs. Local
-          imports stay offline. A URL list starts a normal crawl.
+          Package saved HTML with its assets, media, folders, ZIPs, or WARC
+          captures. Local imports stay offline. A URL list starts a normal
+          crawl.
         </p>
         {resumeId && (
           <p className="alert info">
@@ -271,7 +272,7 @@ export function SavedContentImport({
                 disabled={busy}
                 onClick={() => filePicker.current?.click()}
               >
-                <Archive size={17} /> Choose files or ZIP
+                <Archive size={17} /> Choose files, ZIP or WARC
               </button>
               <button
                 className="button secondary"
@@ -283,10 +284,11 @@ export function SavedContentImport({
               </button>
             </div>
             <p className="settings-note">
-              Choose a saved page with its asset folder, or ZIP them together.
-              If your device can’t select folders, use a ZIP. ZIPs support
-              stored/deflate files; symbolic links and encrypted archives are
-              rejected.
+              Choose saved pages with their assets, a ZIP, or a WARC/WARC.GZ
+              capture. WARC imports preserve captured URLs and require review
+              before building. If your device can’t select folders, use a ZIP.
+              ZIPs support stored/deflate files; symbolic links and encrypted
+              archives are rejected.
             </p>
             {files.length > 0 && (
               <div className="import-preview" role="status">

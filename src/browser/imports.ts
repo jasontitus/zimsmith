@@ -1,3 +1,4 @@
+import { expandWarc } from "./warc";
 import {
   BlobReader,
   ZipReader,
@@ -54,7 +55,10 @@ export function approvedFiles(files: ImportFile[], config: Config) {
     if (
       !Number.isSafeInteger(file.size) ||
       file.size < 0 ||
-      file.size > config.max_resource_mb * 1024 ** 2
+      file.size >
+        (/\.warc(?:\.gz)?$/i.test(path)
+          ? importLimit(config)
+          : config.max_resource_mb * 1024 ** 2)
     )
       throw new Error(`File exceeds the per-file limit: ${path}`);
     size += file.size;
@@ -64,7 +68,9 @@ export function approvedFiles(files: ImportFile[], config: Config) {
   });
   return normalized.sort((a, b) => a.path.localeCompare(b.path));
 }
-interface Payload {
+export interface Payload {
+  url?: string;
+  mime?: string;
   path: string;
   file: string;
   size: number;
@@ -113,7 +119,8 @@ export async function prepareImport(
   const dir = await store.dir(job.id),
     payloads: Payload[] = [],
     seen = new Set<string>();
-  let total = 0;
+  let total = 0,
+    warcBudgetUsed = 0;
   const check = () => {
     if (signal.aborted)
       throw new Error("Import stopped. Reselect these files to continue.");
@@ -135,6 +142,37 @@ export async function prepareImport(
       file = await readFile(dir, fileName);
     if (file.size !== upload.size)
       throw new Error(`Import file is incomplete: ${upload.path}`);
+    if (/\.warc(?:\.gz)?$/i.test(upload.path)) {
+      const result = await expandWarc(
+        file,
+        /\.gz$/i.test(upload.path),
+        dir,
+        importLimit(job.config) - warcBudgetUsed,
+        job.config.max_resource_mb * 1024 ** 2,
+        check,
+        async (count) => {
+          job.progress = {
+            label: `Reading WARC record ${count}`,
+            completed: count,
+            total: null,
+            unit: "records",
+            received: 0,
+            expected: null,
+            updated_at: Math.floor(Date.now() / 1000),
+          };
+          await save();
+        },
+      );
+      warcBudgetUsed += result.budgetUsed;
+      for (const payload of result.payloads) add(payload);
+      if (result.skipped)
+        job.logs.push({
+          time: Math.floor(Date.now() / 1000),
+          level: "warning",
+          message: `WARC import omitted ${result.skipped} redirect, error, partial, revisit, conversion or segmented records. Only complete captured response/resource bodies are imported.`,
+        });
+      continue;
+    }
     if (!/\.zip$/i.test(upload.path)) {
       add({ path: upload.path, file: fileName, size: file.size });
       continue;
@@ -206,9 +244,10 @@ export async function prepareImport(
   for (const payload of payloads) {
     check();
     const url =
+      payload.url ||
       "https://local-import.invalid/" +
-      payload.path.split("/").map(encodeURIComponent).join("/");
-    const type = mime(payload.path),
+        payload.path.split("/").map(encodeURIComponent).join("/");
+    const type = payload.mime || mime(payload.path),
       id = crypto.randomUUID();
     const receipt: Receipt = {
       file: payload.file,

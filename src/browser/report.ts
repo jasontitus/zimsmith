@@ -31,7 +31,10 @@ export async function captureReport(
     subtitle_tracks: 0,
     caption_gaps: 0,
     search_limited: false,
-    warnings: [],
+    warnings: job.logs
+      .filter((log) => log.message.startsWith("WARC import omitted"))
+      .map((log) => log.message)
+      .slice(-10),
   };
   for (const entry of selected) {
     if (!entry.media && entry.file) {
