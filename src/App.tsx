@@ -47,7 +47,6 @@ import {
   repairYouTubeAudio,
   refreshJavascript,
   buildAvailable,
-  deleteFailed,
 } from "./api";
 import { browserOnly, extensionMode } from "./browser/client";
 import brandIcon from "./assets/zimsmith-icon.png";
@@ -343,22 +342,32 @@ export default function App() {
       openJob(result);
     });
   const openArchive = (id: string) => void action(() => api.open(id));
-  const deleteAttempt = async () => {
+  const canManageJob =
+    job && ["completed", "failed", "paused", "review"].includes(job.status);
+  const deleteLabel =
+    job?.status === "completed"
+      ? "Delete archive"
+      : job?.status === "failed"
+        ? "Delete failed attempt"
+        : "Delete build";
+  const deleteJob = async () => {
     if (!job) return;
     setBusy(true);
     setError("");
     try {
-      const cleaned = await deleteFailed(job.id);
+      const cleaned = await api.deleteJob(job.id);
       deletedJobs.current.add(job.id);
       setJobs((items) => items.filter((item) => item.id !== job.id));
       setSelectedJob(null);
       setJob(null);
-      setTab("queue");
+      setTab(job.status === "completed" ? "library" : "queue");
       setConfirmDelete(false);
       setToast(
         cleaned
-          ? "Failed attempt and cached files deleted."
-          : "Failed attempt removed. Cached file cleanup will be retried on next launch.",
+          ? job.status === "failed"
+            ? "Failed attempt and cached files deleted."
+            : "Local files deleted."
+          : "Removed from Zimsmith. Remaining file cleanup will be retried on next launch.",
       );
     } catch (error) {
       setError(friendlyError(error));
@@ -1374,29 +1383,6 @@ export default function App() {
                     </button>
                   </section>
                 )}
-              {(native || browserOnly) && job.status === "failed" && (
-                <section
-                  className="panel rebuild-panel"
-                  aria-labelledby="delete-attempt-title"
-                >
-                  <div>
-                    <h2 id="delete-attempt-title">
-                      Remove this failed attempt
-                    </h2>
-                    <p>
-                      Delete its activity entry and internal cached files. ZIM
-                      copies you exported stay unchanged.
-                    </p>
-                  </div>
-                  <button
-                    className="button secondary"
-                    disabled={busy}
-                    onClick={() => setConfirmDelete(true)}
-                  >
-                    <Trash2 size={17} /> Delete failed attempt
-                  </button>
-                </section>
-              )}
               {job.retry_at &&
                 job.retry_at > Date.now() / 1000 &&
                 job.status !== "completed" && (
@@ -1554,6 +1540,53 @@ export default function App() {
                       }
                     >
                       <RefreshCw size={17} /> Rebuild ZIM
+                    </button>
+                  </div>
+                </section>
+              )}
+              {canManageJob && (
+                <section
+                  className="panel rebuild-panel"
+                  aria-labelledby="delete-attempt-title"
+                >
+                  <div>
+                    <h2 id="delete-attempt-title">Manage local storage</h2>
+                    <p>
+                      Delete this collection and its local files. Exported ZIM
+                      copies stay in Files or Downloads.
+                    </p>
+                    {(job.phase === "package" || job.output) && (
+                      <p>
+                        Clean build files to keep the saved inputs and any
+                        finished ZIM.
+                      </p>
+                    )}
+                  </div>
+                  <div className="rebuild-controls">
+                    {(job.phase === "package" || job.output) && (
+                      <button
+                        className="button secondary"
+                        disabled={busy}
+                        onClick={() =>
+                          void action(async () => {
+                            const removed = await api.cleanBuild(job.id);
+                            setToast(
+                              removed
+                                ? "Temporary build files removed."
+                                : "No temporary build files to remove.",
+                            );
+                          })
+                        }
+                      >
+                        Clean build files
+                      </button>
+                    )}
+                    <button
+                      className="button secondary"
+                      disabled={busy}
+                      onClick={() => setConfirmDelete(true)}
+                    >
+                      <Trash2 size={17} /> {deleteLabel}
                     </button>
                   </div>
                 </section>
@@ -2263,7 +2296,7 @@ export default function App() {
             aria-labelledby="delete-title"
             onClick={(e) => e.stopPropagation()}
           >
-            <h2 id="delete-title">Delete failed attempt?</h2>
+            <h2 id="delete-title">{deleteLabel}?</h2>
             <p>
               Remove “{job.config.title}” and all its internal downloads and
               cached files from this device. Exported ZIM copies stay unchanged.
@@ -2275,14 +2308,15 @@ export default function App() {
                 disabled={busy}
                 onClick={() => setConfirmDelete(false)}
               >
-                Keep attempt
+                {job.status === "failed" ? "Keep attempt" : "Cancel"}
               </button>
               <button
                 className="button primary"
                 disabled={busy}
-                onClick={() => void deleteAttempt()}
+                onClick={() => void deleteJob()}
               >
-                <Trash2 size={17} /> Delete attempt
+                <Trash2 size={17} />{" "}
+                {job.status === "failed" ? "Delete attempt" : deleteLabel}
               </button>
             </div>
           </section>

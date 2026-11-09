@@ -545,22 +545,69 @@ impl Engine {
     /// Remove a stopped failed attempt and its internal files, never exported copies.
     /// Returns false if disk cleanup must be retried on the next app launch.
     pub async fn delete_failed(&self, id: &str) -> Result<bool> {
+        self.delete_stopped(id, true).await
+    }
+
+    /// Remove a stopped job and all of its local working files.
+    pub async fn delete_job(&self, id: &str) -> Result<bool> {
+        self.delete_stopped(id, false).await
+    }
+
+    async fn delete_stopped(&self, id: &str, failed_only: bool) -> Result<bool> {
         let mut records = self.jobs.write().await;
         let record = records.get(id).cloned().context("Job not found")?;
         let mut job = record.job.lock().await;
         anyhow::ensure!(
-            job.status == "failed" && !record.running.load(Ordering::SeqCst),
-            "Only stopped failed attempts can be deleted"
+            (!failed_only || job.status == "failed")
+                && ["failed", "paused", "review", "completed"].contains(&job.status.as_str())
+                && !record.running.load(Ordering::SeqCst),
+            "Pause the job and wait for it to stop before deleting it"
         );
         let trash = self.root.join(".deleted");
         tokio::fs::create_dir_all(&trash).await?;
         let tombstone = trash.join(uuid::Uuid::new_v4().to_string());
-        tokio::fs::rename(&record.dir, &tombstone).await?;
+        // Commit the rename and in-memory removal without a cancellation point.
+        std::fs::rename(&record.dir, &tombstone)?;
         job.status = "deleted".into();
         records.remove(id);
         drop(job);
         drop(records);
         Ok(tokio::fs::remove_dir_all(tombstone).await.is_ok())
+    }
+
+    /// Remove regenerable packaging files while retaining the archive and inputs.
+    pub async fn clean_build(&self, id: &str) -> Result<usize> {
+        let record = self.record(id).await?;
+        let job = record.job.lock().await;
+        anyhow::ensure!(
+            ["failed", "paused", "review", "completed"].contains(&job.status.as_str())
+                && !record.running.load(Ordering::SeqCst),
+            "Pause the job and wait for it to stop before cleaning build files"
+        );
+        let mut removed = 0;
+        let mut files = tokio::fs::read_dir(&record.dir).await?;
+        while let Some(file) = files.next_entry().await? {
+            let name = file.file_name();
+            let name = name.to_string_lossy();
+            if !matches!(
+                name.as_ref(),
+                "content" | "archive.partial.zim" | "fulltext.xapian" | "title.xapian"
+            ) && !(name.starts_with(".zimru-stream-") && name.ends_with(".tmp"))
+            {
+                continue;
+            }
+            let result = if file.file_type().await?.is_dir() {
+                tokio::fs::remove_dir_all(file.path()).await
+            } else {
+                tokio::fs::remove_file(file.path()).await
+            };
+            match result {
+                Ok(()) => removed += 1,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(error) => return Err(error).context("Could not remove temporary build files"),
+            }
+        }
+        Ok(removed)
     }
 
     /// Explicitly finish a website without any more network requests.

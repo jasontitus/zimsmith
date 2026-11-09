@@ -80,6 +80,14 @@ const bridgedApi = {
     native
       ? invoke<Job>("refresh_job", { id })
       : request<Job>(`/jobs/${id}/refresh`, {}),
+  deleteJob: (id: string) =>
+    native
+      ? invoke<boolean>("delete_job", { id })
+      : request<boolean>(`/jobs/${id}/delete`, {}),
+  cleanBuild: (id: string) =>
+    native
+      ? invoke<number>("clean_build", { id })
+      : request<number>(`/jobs/${id}/clean-build`, {}),
   open: async (id: string): Promise<void> => {
     if (!native)
       throw new Error(
@@ -107,13 +115,6 @@ export async function buildAvailable(id: string): Promise<Job> {
   if (!native)
     throw new Error("Building available files requires the native app.");
   return invoke<Job>("build_available_job", { id });
-}
-
-export async function deleteFailed(id: string): Promise<boolean> {
-  if (browserOnly) return browserCommand<boolean>("delete_failed_job", { id });
-  if (!native)
-    throw new Error("Deleting failed attempts requires the native app.");
-  return invoke<boolean>("delete_failed_job", { id });
 }
 
 function importCommand<T>(

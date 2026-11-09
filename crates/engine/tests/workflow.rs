@@ -1065,23 +1065,43 @@ async fn saved_attempt(root: &std::path::Path, id: &str, status: &str) -> Job {
 }
 
 #[tokio::test]
-async fn failed_attempt_deletion_removes_only_its_internal_files_and_survives_restart() {
+async fn storage_cleanup_preserves_rebuild_inputs_and_deletion_preserves_exported_copies() {
     let temp = tempfile::tempdir().unwrap();
     saved_attempt(temp.path(), "failed", "failed").await;
     saved_attempt(temp.path(), "paused", "paused").await;
+    saved_attempt(temp.path(), "completed", "completed").await;
+    let completed = temp.path().join("completed");
+    let archive = completed.join("archive.zim");
+    tokio::fs::write(&archive, "exported copy").await.unwrap();
+    tokio::fs::create_dir(completed.join("content"))
+        .await
+        .unwrap();
+    for file in ["archive.partial.zim", ".zimru-stream-old.tmp"] {
+        tokio::fs::write(completed.join(file), "temporary")
+            .await
+            .unwrap();
+    }
     let export = temp.path().join("exported.zim");
-    tokio::fs::write(&export, "exported copy").await.unwrap();
+    tokio::fs::hard_link(&archive, &export).await.unwrap();
     let engine = Engine::open(temp.path()).await.unwrap();
     assert!(engine.delete_failed("paused").await.is_err());
     let failed = engine.record("failed").await.unwrap();
     failed.running.store(true, Ordering::SeqCst);
     assert!(engine.delete_failed("failed").await.is_err());
+    assert!(engine.delete_job("failed").await.is_err());
+    assert!(engine.clean_build("failed").await.is_err());
     failed.running.store(false, Ordering::SeqCst);
     assert!(engine.delete_failed("failed").await.unwrap());
     assert!(engine.get("failed").await.is_err());
     assert!(!temp.path().join("failed").exists());
     assert_eq!(failed.job.lock().await.status, "deleted");
     assert!(engine.resume("failed").await.is_err());
+    assert_eq!(engine.clean_build("completed").await.unwrap(), 3);
+    assert_eq!(engine.clean_build("completed").await.unwrap(), 0);
+    assert!(archive.is_file());
+    assert!(completed.join("cache/home.html").is_file());
+    assert!(engine.delete_job("completed").await.unwrap());
+    assert!(!completed.exists());
     assert_eq!(
         tokio::fs::read_to_string(export).await.unwrap(),
         "exported copy"
@@ -1089,6 +1109,8 @@ async fn failed_attempt_deletion_removes_only_its_internal_files_and_survives_re
     let reopened = Engine::open(temp.path()).await.unwrap();
     assert_eq!(reopened.list().await.len(), 1);
     assert!(reopened.get("paused").await.is_ok());
+    assert!(reopened.delete_job("paused").await.unwrap());
+    assert!(reopened.list().await.is_empty());
 }
 
 #[tokio::test]

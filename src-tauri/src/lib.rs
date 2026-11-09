@@ -211,11 +211,23 @@ async fn refresh_job(engine: State<'_, Engine>, id: String) -> Result<Job, Strin
 }
 
 #[tauri::command]
-async fn delete_failed_job(engine: State<'_, Engine>, id: String) -> Result<bool, String> {
-    engine
-        .delete_failed(&id)
-        .await
-        .map_err(|e| format!("{e:#}"))
+async fn delete_job(
+    app: tauri::AppHandle,
+    engine: State<'_, Engine>,
+    id: String,
+) -> Result<bool, String> {
+    let _handoff = ARCHIVE_HANDOFF.lock().await;
+    let exports = archive_exports(&app)?;
+    if !is_archive_id(&id) {
+        return Err("Invalid archive ID".into());
+    }
+    let cleaned = engine.delete_job(&id).await.map_err(|e| format!("{e:#}"))?;
+    Ok(remove_staged_archive(exports.join(id)).await && cleaned)
+}
+
+#[tauri::command]
+async fn clean_build(engine: State<'_, Engine>, id: String) -> Result<usize, String> {
+    engine.clean_build(&id).await.map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]
@@ -255,19 +267,59 @@ fn archive_filename(title: &str, id: &str, revision: u64) -> String {
     )
 }
 
+static ARCHIVE_HANDOFF: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+fn archive_exports(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| e.to_string())?
+        .join("exports"))
+}
+
+fn is_archive_id(id: &str) -> bool {
+    id.len() == 36
+        && id.bytes().enumerate().all(|(i, byte)| match i {
+            8 | 13 | 18 | 23 => byte == b'-',
+            _ => byte.is_ascii_hexdigit(),
+        })
+}
+
+async fn remove_staged_archive(path: std::path::PathBuf) -> bool {
+    match tokio::fs::remove_dir_all(path).await {
+        Ok(()) => true,
+        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+    }
+}
+
+async fn prune_staged_archives(app: tauri::AppHandle, engine: Engine) {
+    let _handoff = ARCHIVE_HANDOFF.lock().await;
+    let Ok(folder) = archive_exports(&app) else {
+        return;
+    };
+    let Ok(mut dirs) = tokio::fs::read_dir(folder).await else {
+        return;
+    };
+    while let Ok(Some(dir)) = dirs.next_entry().await {
+        if let Some(id) = dir.file_name().to_str() {
+            if is_archive_id(id) && engine.record(id).await.is_err() {
+                remove_staged_archive(dir.path()).await;
+            }
+        }
+    }
+}
+
 async fn archive_for_handoff(
     app: &tauri::AppHandle,
     engine: &Engine,
     id: &str,
 ) -> Result<std::path::PathBuf, String> {
+    if !is_archive_id(id) {
+        return Err("Invalid archive ID".into());
+    }
     let source = engine.artifact(id).await.map_err(|e| e.to_string())?;
     let job = engine.get(id).await.map_err(|e| e.to_string())?;
-    let folder = app
-        .path()
-        .app_cache_dir()
-        .map_err(|e| e.to_string())?
-        .join("exports")
-        .join(id);
+    let folder = archive_exports(app)?.join(id);
     tokio::fs::create_dir_all(&folder)
         .await
         .map_err(|e| e.to_string())?;
@@ -322,6 +374,7 @@ async fn export_archive(
     engine: State<'_, Engine>,
     id: String,
 ) -> Result<String, String> {
+    let _handoff = ARCHIVE_HANDOFF.lock().await;
     let source = archive_for_handoff(&app, &engine, &id).await?;
     #[cfg(any(target_os = "ios", target_os = "android"))]
     {
@@ -359,6 +412,7 @@ async fn open_archive(
     engine: State<'_, Engine>,
     id: String,
 ) -> Result<(), String> {
+    let _handoff = ARCHIVE_HANDOFF.lock().await;
     let source = archive_for_handoff(&app, &engine, &id).await?;
     #[cfg(any(target_os = "ios", target_os = "android"))]
     {
@@ -495,6 +549,10 @@ pub fn run() {
             tauri::async_runtime::block_on(engine.set_page_renderer(std::sync::Arc::new(
                 rendering::BrowserRenderer::new(app.handle().clone()),
             )));
+            tauri::async_runtime::spawn(prune_staged_archives(
+                app.handle().clone(),
+                engine.clone(),
+            ));
             app.manage(engine);
             #[cfg(all(target_os = "android", feature = "direct-updates"))]
             app.manage(updates::Updater::new(
@@ -541,7 +599,8 @@ fn app_commands() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sy
         rebuild_job,
         repair_youtube_audio,
         build_available_job,
-        delete_failed_job,
+        delete_job,
+        clean_build,
         refresh_job,
         begin_import,
         import_offset,

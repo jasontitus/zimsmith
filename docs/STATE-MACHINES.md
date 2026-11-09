@@ -65,7 +65,8 @@ A visible terminal or paused status alone does not prove the worker released own
 | stopped failed/paused               | Edit settings                                     | scan or saved phase/active    | Discovery-affecting edits rescan; other edits resume                           |
 | completed/failed/paused media       | Native original audio repair after scan           | download/downloading          | Preserve approved selection, re-resolve original track                         |
 | Active checkpoint on startup        | Recovery                                          | same phase/paused             | Never silently restart downloads                                               |
-| failed and stopped                  | Delete                                            | absent                        | Native rename into `.deleted`; browser delete manifest before files            |
+| failed, paused, review or completed and stopped | Delete                                 | absent                        | Native rename into `.deleted`; browser delete manifest before files            |
+| failed, paused, review or completed and stopped | Clean build files                      | same state                    | Remove regenerable packaging files while preserving the archive and saved inputs |
 
 Native edit also accepts review. Browser edit currently accepts failed/paused only. Imports require reselection while unfinished and reject ordinary resume. Native deletion may return deferred disk cleanup; browser orphan cleanup likewise retries at startup.
 

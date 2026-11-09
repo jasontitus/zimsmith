@@ -92,7 +92,7 @@ async function failedPhone(page: Page, status = "failed", itemCount = 1) {
             w.attempt.error = null;
             return w.attempt;
           }
-          if (command === "delete_failed_job") {
+          if (command === "delete_job") {
             w.attempt = null;
             return true;
           }
@@ -191,7 +191,7 @@ test("delete asks first, cancellation preserves attempt, confirmation removes it
     page.locator(".job-row").filter({ hasText: "Interrupted collection" }),
   ).toHaveCount(0);
   expect(await page.evaluate(() => (window as any).recoveryCalls)).toEqual([
-    "delete_failed_job",
+    "delete_job",
   ]);
   await expect(
     page.getByText("Failed attempt and cached files deleted.", { exact: true }),
@@ -205,6 +205,9 @@ test("paused download offers explicit partial build and explains missing assets"
   await expect(
     page.getByRole("button", { name: "Delete failed attempt", exact: true }),
   ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Delete build", exact: true }),
+  ).toBeVisible();
   await expect(
     page.getByRole("region", { name: "Finish with what’s downloaded" }),
   ).toContainText("8 assets saved · 8 not downloaded");

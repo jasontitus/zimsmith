@@ -159,6 +159,76 @@ else:
         ],
         { timeout: 90000 },
       );
+      if (format === "ZIP") {
+        const id = await page.evaluate(async () => {
+          const root = await (
+            await navigator.storage.getDirectory()
+          ).getDirectoryHandle("zimsmith");
+          const dirs = root as FileSystemDirectoryHandle & {
+            keys(): AsyncIterableIterator<string>;
+          };
+          const { value: id } = await dirs.keys().next();
+          const dir = await root.getDirectoryHandle(id);
+          await dir.getFileHandle("archive-r99.zim", { create: true });
+          return id as string;
+        });
+        await page.getByRole("button", { name: "Clean build files" }).click();
+        await expect(
+          page.getByText("Temporary build files removed.", { exact: false }),
+        ).toBeVisible();
+        expect(
+          await page.evaluate(async (id) => {
+            const root = await (
+              await navigator.storage.getDirectory()
+            ).getDirectoryHandle("zimsmith");
+            const dir = await root.getDirectoryHandle(id);
+            const current = await (
+              await dir.getFileHandle("archive-r0.zim")
+            ).getFile();
+            const obsolete = await dir
+              .getFileHandle("archive-r99.zim")
+              .catch(() => null);
+            return current.size > 0 && obsolete === null;
+          }, id),
+        ).toBe(true);
+        await page
+          .getByRole("button", { name: "Delete archive", exact: true })
+          .click();
+        const deleteDialog = page.getByRole("dialog", {
+          name: "Delete archive?",
+        });
+        await expect(deleteDialog).toContainText(
+          "Exported ZIM copies stay unchanged",
+        );
+        await deleteDialog
+          .getByRole("button", { name: "Delete archive", exact: true })
+          .click();
+        await expect(
+          page.getByRole("heading", { name: "Your offline library." }),
+        ).toBeVisible();
+        await page.reload();
+        await page
+          .getByRole("button", { name: /My archives/ })
+          .first()
+          .click();
+        await expect(
+          page.getByRole("heading", { name: "Your offline library." }),
+        ).toBeVisible();
+        await expect(
+          page.locator(".job-row").filter({ hasText: "Saved garden" }),
+        ).toHaveCount(0);
+        expect(
+          await page.evaluate(async (id) => {
+            const root = await (
+              await navigator.storage.getDirectory()
+            ).getDirectoryHandle("zimsmith");
+            return (
+              (await root.getDirectoryHandle(id).catch(() => null)) === null
+            );
+          }, id),
+        ).toBe(true);
+        expect((await readFile(path)).length).toBeGreaterThan(0);
+      }
       expect(errors).toEqual([]);
     } finally {
       server.closeAllConnections();

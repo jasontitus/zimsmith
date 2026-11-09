@@ -161,7 +161,9 @@ export class BrowserEngine {
       "resume_job",
       "edit_job",
       "build_job",
-      "delete_failed_job",
+      "delete_job",
+      "clean_build",
+      "export_archive",
       "begin_import",
       "import_chunk",
       "finish_import",
@@ -361,14 +363,17 @@ export class BrowserEngine {
         this.launch(id);
         return this.view(job);
       }
-      case "delete_failed_job": {
+      case "delete_job":
+      case "clean_build": {
         const job = this.job(id);
+        this.idle(job);
         if (
-          job.status !== "failed" ||
-          this.controls.has(id) ||
+          !["failed", "paused", "review", "completed"].includes(job.status) ||
           this.queue.includes(id)
         )
-          throw new Error("Only stopped failed attempts can be deleted.");
+          throw new Error("Pause the job and wait for it to stop first.");
+        if (command === "clean_build")
+          return this.store.cleanBuild(id, job.output_file);
         const cleaned = await this.store.removeJob(id);
         this.jobs.delete(id);
         return cleaned;

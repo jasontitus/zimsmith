@@ -119,9 +119,25 @@ export class Store {
     try {
       await this.root.removeEntry(id, { recursive: true });
       return true;
-    } catch {
-      return false;
+    } catch (error) {
+      return error instanceof DOMException && error.name === "NotFoundError";
     }
+  }
+  async cleanBuild(id: string, keep?: string) {
+    const dir = (await this.dir(id)) as FileSystemDirectoryHandle & {
+      entries(): AsyncIterableIterator<[string, FileSystemHandle]>;
+    };
+    const obsolete: string[] = [];
+    for await (const [name, handle] of dir.entries()) {
+      if (
+        handle.kind === "file" &&
+        /^archive-r\d+\.zim$/.test(name) &&
+        name !== keep
+      )
+        obsolete.push(name);
+    }
+    for (const name of obsolete) await dir.removeEntry(name);
+    return obsolete.length;
   }
   async dir(id: string) {
     return this.root.getDirectoryHandle(id, { create: true });

@@ -71,7 +71,9 @@ For a paused or failed website download, **Build with available files** packages
 
 If packaging previously failed with `title contains a control character`, use **Retry & resume** to rebuild from saved files. Zimsmith replaces control characters such as tabs and newlines with spaces in the ZIM directory titles.
 
-Open a failed attempt in **Activity**, choose **Delete failed attempt**, then confirm. This removes its activity entry and internal downloads, including any internal ZIM. Copies you previously exported remain in Files or Downloads. Running and paused jobs cannot be deleted through this action.
+Open **My archives → Details** and choose **Delete archive** to remove an archive and its local build data. In **Activity**, use **Delete build** for a paused or unapproved build, or **Delete failed attempt** for a failed one. Pause a running job and wait for it to stop first. Confirm deletion to remove the job. Exported copies remain in Files or Downloads.
+
+Use **Clean build files** to free space from temporary packaging files while keeping the job, saved inputs, and any finished ZIM. Browser cleanup also removes obsolete local ZIM revisions.
 
 ### Refresh and capture controls
 

@@ -100,6 +100,8 @@ export const browserApi = {
     await permit();
     return call<Job>("refresh_job", { id });
   },
+  deleteJob: (id: string) => call<boolean>("delete_job", { id }),
+  cleanBuild: (id: string) => call<number>("clean_build", { id }),
   open: async (_id: string): Promise<void> => {
     throw new Error("Save the ZIM and open it with your installed ZIM viewer.");
   },

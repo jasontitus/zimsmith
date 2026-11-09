@@ -90,6 +90,8 @@ async fn main() -> Result<()> {
         .route("/api/jobs/{id}/edit", post(edit))
         .route("/api/jobs/{id}/rebuild", post(rebuild))
         .route("/api/jobs/{id}/refresh", post(refresh))
+        .route("/api/jobs/{id}/delete", post(delete_job))
+        .route("/api/jobs/{id}/clean-build", post(clean_build))
         .route("/api/jobs/{id}/artifact", get(artifact))
         .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
         .layer(middleware::from_fn_with_state(app.clone(), authorize))
@@ -186,6 +188,12 @@ async fn resume(State(app): State<App>, Path(id): Path<String>) -> ApiResult<Jso
 }
 async fn refresh(State(app): State<App>, Path(id): Path<String>) -> ApiResult<Json<Job>> {
     Ok(Json(app.engine.refresh_collection(&id).await?.view()))
+}
+async fn delete_job(State(app): State<App>, Path(id): Path<String>) -> ApiResult<Json<bool>> {
+    Ok(Json(app.engine.delete_job(&id).await?))
+}
+async fn clean_build(State(app): State<App>, Path(id): Path<String>) -> ApiResult<Json<usize>> {
+    Ok(Json(app.engine.clean_build(&id).await?))
 }
 async fn edit(
     State(app): State<App>,
