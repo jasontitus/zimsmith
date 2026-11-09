@@ -46,6 +46,10 @@ async fn warc_and_multimember_gzip_import_original_urls_assets_and_chunked_http_
         http.extend(format!("{:x}\r\n", zipped.len()).as_bytes());
         http.extend(zipped);
         http.extend(b"\r\n0\r\n\r\n");
+        let other_html = format!(
+            "<title>Other</title><p>Captured content</p><pre>{}</pre>",
+            "content ".repeat(40_000),
+        );
         let records = vec![
             record(
                 "response",
@@ -57,7 +61,7 @@ async fn warc_and_multimember_gzip_import_original_urls_assets_and_chunked_http_
                 "resource",
                 "https://capture.invalid/other",
                 "text/html",
-                b"<title>Other</title><p>Captured content</p>",
+                other_html.as_bytes(),
             ),
             record(
                 "resource",
@@ -117,6 +121,15 @@ async fn warc_and_multimember_gzip_import_original_urls_assets_and_chunked_http_
             .unwrap()
             .id
             .clone();
+        if compressed {
+            // An interrupted writer leaves its partial output behind. The
+            // next build must replace it using serial encoding and verify.
+            std::fs::write(
+                temp.path().join(&id).join("archive.partial.zim"),
+                b"interrupted",
+            )
+            .unwrap();
+        }
         engine
             .build(&id, job.entries.iter().map(|e| e.id.clone()).collect())
             .await
@@ -134,6 +147,13 @@ async fn warc_and_multimember_gzip_import_original_urls_assets_and_chunked_http_
         .unwrap();
         assert_eq!(done.status, "completed", "{:?}", done.error);
         assert_eq!(done.requests, 0);
+        assert!(done.validation.as_ref().unwrap().checksum_verified);
+        if compressed {
+            let trace =
+                std::fs::read_to_string(temp.path().join(&id).join("archive-writer.log")).unwrap();
+            assert!(trace.contains("serial=true"));
+            assert!(trace.contains("archive written and verified"));
+        }
         let archive = zimru::Archive::open(done.output.unwrap()).unwrap();
         let saved = archive.get_text(&format!("{home}.html")).unwrap();
         assert!(saved.contains(&format!("{other}.html")));

@@ -593,6 +593,7 @@ pub struct Creator {
     /// Limit on allocated blob bytes queued or in flight in the encode pipeline.
     /// Zero selects a default based on worker count and cluster target size.
     max_in_flight_bytes: usize,
+    serial_encoding: bool,
     uuid: [u8; 16],
     cluster_strategy: ClusterStrategy,
     /// Chunked items whose `expected_size` is at least this many bytes
@@ -628,6 +629,7 @@ impl Creator {
             compression_level: None,
             cluster_size_target: DEFAULT_CLUSTER_SIZE_TARGET,
             max_in_flight_bytes: 0,
+            serial_encoding: false,
             uuid: default_uuid(),
             cluster_strategy: ClusterStrategy::Single,
             streaming_encode_threshold: STREAMING_ENCODE_THRESHOLD,
@@ -1063,6 +1065,17 @@ impl Creator {
         self
     }
 
+    /// Encode and write clusters on the producer thread, without the
+    /// parallel pipeline or Zstandard's internal worker threads.
+    pub fn set_serial_encoding(&mut self, enabled: bool) -> &mut Self {
+        assert!(
+            self.stream.is_none(),
+            "set_serial_encoding called after start_writing"
+        );
+        self.serial_encoding = enabled;
+        self
+    }
+
     pub fn set_uuid(&mut self, uuid: impl Into<crate::Uuid>) -> &mut Self {
         self.uuid = uuid.into().into_bytes();
         self
@@ -1107,6 +1120,7 @@ impl Creator {
             self.compression_level,
             self.cluster_size_target,
             self.max_in_flight_bytes,
+            self.serial_encoding,
             self.uuid,
             self.main_path.take(),
             self.cluster_strategy,
@@ -1390,6 +1404,7 @@ struct Streamer {
     cluster_size_target: usize,
     /// Byte-based pipeline limit; zero selects the worker/target-sized default.
     max_in_flight_bytes: usize,
+    serial_encoding: bool,
     uuid: [u8; 16],
     main_path: Option<String>,
     cluster_strategy: ClusterStrategy,
@@ -1599,6 +1614,15 @@ impl Streamer {
     /// Submit a cluster, waiting for its actual allocated blob bytes to fit
     /// the pipeline budget before it can become queued or active work.
     fn send_cluster(&mut self, idx: u32, blobs: Vec<Vec<u8>>, comp: Compression) -> Result<()> {
+        if self.serial_encoding {
+            let bytes = encode_cluster(&blobs, comp, self.compression_level)?;
+            self.cluster_offsets[idx as usize] = self.file_pos;
+            self.file_mut().write_all(&bytes)?;
+            self.file_pos += bytes.len() as u64;
+            self.stats.clusters_buffered += 1;
+            self.stats.bytes_clusters_written += bytes.len() as u64;
+            return Ok(());
+        }
         if self.pipeline.is_none() {
             self.start_pipeline()?;
         }
@@ -1676,6 +1700,7 @@ impl Streamer {
         compression_level: Option<i32>,
         cluster_size_target: usize,
         max_in_flight_bytes: usize,
+        serial_encoding: bool,
         uuid: [u8; 16],
         main_path: Option<String>,
         cluster_strategy: ClusterStrategy,
@@ -1701,6 +1726,7 @@ impl Streamer {
             compression_level,
             cluster_size_target,
             max_in_flight_bytes,
+            serial_encoding,
             uuid,
             main_path,
             cluster_strategy,
@@ -1837,8 +1863,10 @@ impl Streamer {
                 // multiple streamed items also run concurrently with
                 // each other (Idea C); each gets fewer workers but
                 // they overlap across items.
-                let workers = rayon::current_num_threads().max(1) as u32;
-                let _ = encoder.multithread(workers);
+                if !self.serial_encoding {
+                    let workers = rayon::current_num_threads().max(1) as u32;
+                    let _ = encoder.multithread(workers);
+                }
                 encoder
                     .write_all(&header)
                     .map_err(|e| Error::Decompression(format!("zstd header write: {e}")))?;
@@ -2028,14 +2056,19 @@ impl Streamer {
                 // continue feeding the encode pipeline. The bg
                 // thread also returns the final compressed-byte
                 // count so finalize knows how many bytes to splice.
-                let handle = std::thread::spawn(move || -> Result<(TempPath, u64)> {
+                let finish = move || -> Result<(TempPath, u64)> {
                     let file = encoder
                         .finish()
                         .map_err(|e| Error::Decompression(format!("zstd finish: {e}")))?;
                     let bytes = file.metadata()?.len();
                     drop(file); // close the temp file
                     Ok((temp_path, bytes))
-                });
+                };
+                if self.serial_encoding {
+                    let (temp, bytes) = finish()?;
+                    return self.append_streamed_cluster(cluster_idx, temp, bytes);
+                }
+                let handle = std::thread::spawn(finish);
                 self.streaming_tasks.push(StreamingTask {
                     cluster_idx,
                     handle,
@@ -2069,11 +2102,16 @@ impl Streamer {
                 // finalize splice. Wrap in a JoinHandle-shaped task
                 // so `drain_streaming_tasks` can treat both variants
                 // uniformly.
-                let handle = std::thread::spawn(move || -> Result<(TempPath, u64)> {
+                let finish = move || -> Result<(TempPath, u64)> {
                     let bytes = temp_file.metadata()?.len();
                     drop(temp_file);
                     Ok((temp_path, bytes))
-                });
+                };
+                if self.serial_encoding {
+                    let (temp, bytes) = finish()?;
+                    return self.append_streamed_cluster(cluster_idx, temp, bytes);
+                }
+                let handle = std::thread::spawn(finish);
                 self.streaming_tasks.push(StreamingTask {
                     cluster_idx,
                     handle,
@@ -2130,15 +2168,29 @@ impl Streamer {
         // without depending on io_uring itself.
         completed.sort_by_key(|(idx, _, _)| *idx);
         for (cluster_idx, temp_path, bytes) in completed {
-            self.cluster_offsets[cluster_idx as usize] = self.file_pos;
-            let mut tf = std::fs::File::open(&temp_path)?;
-            let copied = std::io::copy(&mut tf, self.file_mut())?;
-            drop(tf);
-            self.file_pos += copied;
-            self.stats.clusters_streamed += 1;
-            self.stats.bytes_clusters_written += bytes;
+            self.append_streamed_cluster(cluster_idx, temp_path, bytes)?;
         }
         self.stats.streaming_encode += phase_start.elapsed();
+        Ok(())
+    }
+
+    fn append_streamed_cluster(
+        &mut self,
+        cluster_idx: u32,
+        temp_path: TempPath,
+        bytes: u64,
+    ) -> Result<()> {
+        self.cluster_offsets[cluster_idx as usize] = self.file_pos;
+        let mut input = std::fs::File::open(&temp_path)?;
+        let copied = std::io::copy(&mut input, self.file_mut())?;
+        if copied != bytes {
+            return Err(Error::Io(std::io::Error::other(
+                "incomplete streamed cluster",
+            )));
+        }
+        self.file_pos += copied;
+        self.stats.clusters_streamed += 1;
+        self.stats.bytes_clusters_written += copied;
         Ok(())
     }
 

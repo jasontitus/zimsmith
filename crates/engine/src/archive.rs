@@ -277,8 +277,10 @@ pub async fn package(record: &Record) -> Result<()> {
     tokio::fs::write(content.join("archive-display.woff2"), templates::DISPLAY).await?;
     tokio::fs::write(content.join("font-licenses.txt"), templates::FONT_LICENSE).await?;
     write_icon(&content.join("favicon.png"))?;
-    record.log("info", format!("Offline pages, table of contents, and portable inverted search index ready. Writing ZIM locally with zimru, Zstandard level {}.", job.zstd_level)).await?;
     let partial = record.dir.join("archive.partial.zim");
+    let serial = cfg!(target_os = "ios") || partial.exists();
+    let mode = if serial { "serial" } else { "parallel" };
+    record.log("info", format!("Offline pages, contents, and search index ready. Writing ZIM with {mode} encoding, Zstandard level {}.", job.zstd_level)).await?;
     if partial.exists() {
         tokio::fs::remove_file(&partial).await?;
     }
@@ -287,6 +289,7 @@ pub async fn package(record: &Record) -> Result<()> {
         .set_compression_level(job.zstd_level)
         .set_cluster_size_target(1024 * 1024)
         .set_max_in_flight_bytes(8 * 1024 * 1024)
+        .set_serial_encoding(serial)
         .set_streaming_encode_threshold(256 * 1024);
     creator.try_set_main_path(main_path(&job))?;
     for (name, value) in [
@@ -320,9 +323,6 @@ pub async fn package(record: &Record) -> Result<()> {
     creator.try_add_metadata("Date", format!("{}-{:02}-{}", parts[3], month, parts[1]))?;
     creator.try_add_metadata("Name", format!("zim-studio-{}", job.id))?;
     creator.try_add_illustration(48, tokio::fs::read(content.join("favicon.png")).await?)?;
-    creator.start_writing(&partial)?;
-    #[cfg(feature = "kiwix-index")]
-    add_kiwix_indexes(record, &job, &selected, &content, &mut creator).await?;
     record
         .progress("Listing files for the ZIM writer", 0, None, "")
         .await;
@@ -332,6 +332,16 @@ pub async fn package(record: &Record) -> Result<()> {
         if file.file_type().await?.is_file() {
             files.push(file);
         }
+    }
+    // Stable order makes a stalled writer's file index reproducible on retry.
+    files.sort_by_cached_key(|file| file.file_name());
+    let trace =
+        crate::writer_trace::WriterTrace::start(&record.dir, files.len(), job.zstd_level, serial);
+    creator.start_writing(&partial)?;
+    #[cfg(feature = "kiwix-index")]
+    {
+        trace.at("adding Kiwix indexes", 0, 0, 0);
+        add_kiwix_indexes(record, &job, &selected, &content, &mut creator).await?;
     }
     let titles: BTreeMap<_, _> = selected
         .iter()
@@ -345,6 +355,7 @@ pub async fn package(record: &Record) -> Result<()> {
     let mut buffer = vec![0u8; 64 * 1024];
     for (index, file) in files.iter().enumerate() {
         let filename = file.file_name().to_string_lossy().into_owned();
+        trace.at("reading file metadata", index, 0, 0);
         let meta = file.metadata().await?;
         if !meta.is_file() {
             continue;
@@ -376,23 +387,31 @@ pub async fn package(record: &Record) -> Result<()> {
         let compress = !mime.starts_with("video/")
             && !mime.starts_with("audio/")
             && !mime.starts_with("image/");
-        creator.begin_chunked_item(
-            None,
-            filename,
-            title.replace(char::is_control, " "),
-            mime,
-            Some(meta.len()),
-            Some(compress),
-        )?;
+        trace.at("starting item", index, meta.len(), 0);
+        creator
+            .begin_chunked_item(
+                None,
+                filename,
+                title.replace(char::is_control, " "),
+                mime,
+                Some(meta.len()),
+                Some(compress),
+            )
+            .with_context(|| format!("Could not start ZIM item {}", index + 1))?;
+        trace.at("opening content file", index, meta.len(), 0);
         let mut input = tokio::fs::File::open(file.path()).await?;
         let mut written = 0u64;
         let mut last_update = std::time::Instant::now();
         loop {
+            trace.at("reading content bytes", index, meta.len(), written);
             let read = input.read(&mut buffer).await?;
             if read == 0 {
                 break;
             }
-            creator.chunked_item_chunk(&buffer[..read])?;
+            trace.at("encoding item bytes", index, meta.len(), written);
+            creator
+                .chunked_item_chunk(&buffer[..read])
+                .with_context(|| format!("Could not encode ZIM item {}", index + 1))?;
             written += read as u64;
             if last_update.elapsed() >= std::time::Duration::from_millis(500) {
                 record.transfer_progress(written, Some(meta.len())).await;
@@ -400,12 +419,25 @@ pub async fn package(record: &Record) -> Result<()> {
             }
             tokio::task::yield_now().await;
         }
-        creator.end_chunked_item()?;
+        trace.at(
+            "closing item or writing cluster",
+            index,
+            meta.len(),
+            written,
+        );
+        creator
+            .end_chunked_item()
+            .with_context(|| format!("Could not finish ZIM item {}", index + 1))?;
     }
     record
         .progress("Finalizing the ZIM directory and checksum", 0, None, "")
         .await;
-    tokio::task::spawn_blocking(move || creator.finish_writing()).await??;
+    trace.at("finalizing writer", files.len(), 0, 0);
+    // Keep ownership until finalization returns. Dropping a spawn_blocking
+    // handle on pause would let a retry truncate the same file under it.
+    creator
+        .finish_writing()
+        .context("Could not finalize ZIM writer")?;
     let size = tokio::fs::metadata(&partial).await?.len();
     anyhow::ensure!(size > 80, "Writer produced an empty archive");
     let mut header = [0u8; 4];
@@ -417,13 +449,17 @@ pub async fn package(record: &Record) -> Result<()> {
         header.starts_with(&[0x5a, 0x49, 0x4d, 0x04]),
         "Writer output is not a ZIM file"
     );
+    trace.at("validating output", files.len(), size, 0);
     let validation = crate::capture_report::validate(record, &partial).await?;
     record
         .progress("Saving the verified ZIM", 0, None, "")
         .await;
     let final_path = record.dir.join("archive.zim");
     // Same-directory rename replaces atomically, preserving the old ZIM on failure.
+    trace.at("publishing verified archive", files.len(), size, size);
     tokio::fs::rename(&partial, &final_path).await?;
+    trace.at("archive written and verified", files.len(), size, size);
+    drop(trace);
     record.change(|j| {
         j.status = "completed".into(); j.output = Some(final_path.display().to_string()); j.output_bytes = Some(size);
         j.capture_report=Some(report); j.validation=Some(validation);

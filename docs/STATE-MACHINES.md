@@ -132,6 +132,8 @@ Sources are `web.rs`, `robots_cache.rs`, `lib.rs`, `imports.rs`, `src/browser/ne
 
 Sources are `render.rs`, `src-tauri/src/rendering.rs`, `crates/mobile-files/{ios,android}`, `crates/engine/assets/render.js`, `archive.rs`, `mux.rs`, `mp4_layout.rs`, `src/browser/zim.ts`, and `engine.ts`. Publication spans file and manifest operations rather than one filesystem transaction. Existing successful outputs and validation metadata must be interpreted with status/revision, especially during a rebuild.
 
+The native writer holds job ownership through synchronous finalization. A pause can wait for the current writer call to return. Releasing ownership while a detached writer was still finalizing could let a retry truncate the same partial file. On iOS and when a previous attempt left a partial ZIM, the writer encodes clusters serially. The bounded `archive-writer.log` samples the current operation, sorted file index, and bytes independently of the writer without rewriting the job manifest. It retains recent samples from the latest attempt and includes no source URLs or titles.
+
 ## UI, shared links, updates and offline players
 
 | Machine             | States                                                                  | Transitions and invariants                                                                                                                                |
