@@ -189,8 +189,20 @@ async fn resume(State(app): State<App>, Path(id): Path<String>) -> ApiResult<Jso
 async fn refresh(State(app): State<App>, Path(id): Path<String>) -> ApiResult<Json<Job>> {
     Ok(Json(app.engine.refresh_collection(&id).await?.view()))
 }
-async fn delete_job(State(app): State<App>, Path(id): Path<String>) -> ApiResult<Json<bool>> {
-    Ok(Json(app.engine.delete_job(&id).await?))
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeleteJob {
+    expected_status: Option<String>,
+}
+async fn delete_job(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    payload: Option<Json<DeleteJob>>,
+) -> ApiResult<Json<bool>> {
+    let expected = payload.and_then(|Json(value)| value.expected_status);
+    Ok(Json(
+        app.engine.delete_stopped(&id, expected.as_deref()).await?,
+    ))
 }
 async fn clean_build(State(app): State<App>, Path(id): Path<String>) -> ApiResult<Json<usize>> {
     Ok(Json(app.engine.clean_build(&id).await?))

@@ -85,6 +85,15 @@ const activeStates = [
   "pausing",
   "importing",
 ];
+const canDelete = (job: Job) =>
+  ["completed", "failed", "paused", "review"].includes(job.status);
+const deleteLabel = (status: string) =>
+  status === "completed"
+    ? "Delete archive"
+    : status === "failed"
+      ? "Delete failed attempt"
+      : "Delete build";
+type DeleteTarget = { id: string; status: string; title: string };
 const defaultSettings: Settings = {
   auto_start_small_jobs: true,
   auto_start_item_limit: 100,
@@ -143,7 +152,7 @@ export default function App() {
   const [filter, setFilter] = useState("");
   const [collectionPage, setCollectionPage] = useState(0);
   const [confirm, setConfirm] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleteTargets, setDeleteTargets] = useState<DeleteTarget[]>([]);
   const [showHelp, setShowHelp] = useState(false);
   const [templates, setTemplates] = useState<ArchiveTemplateOption[]>([]);
   const [rebuildTemplate, setRebuildTemplate] =
@@ -342,37 +351,61 @@ export default function App() {
       openJob(result);
     });
   const openArchive = (id: string) => void action(() => api.open(id));
-  const canManageJob =
-    job && ["completed", "failed", "paused", "review"].includes(job.status);
-  const deleteLabel =
-    job?.status === "completed"
-      ? "Delete archive"
-      : job?.status === "failed"
-        ? "Delete failed attempt"
-        : "Delete build";
-  const deleteJob = async () => {
-    if (!job) return;
+  const askDelete = (items: Job[]) =>
+    setDeleteTargets(
+      items.map(({ id, status, config }) => ({
+        id,
+        status,
+        title: config.title,
+      })),
+    );
+  const deleteConfirmed = async () => {
+    if (busy || !deleteTargets.length) return;
     setBusy(true);
     setError("");
+    setToast("");
+    const removed = new Set<string>();
+    const failures: string[] = [];
+    let deferred = false;
     try {
-      const cleaned = await api.deleteJob(job.id);
-      deletedJobs.current.add(job.id);
-      setJobs((items) => items.filter((item) => item.id !== job.id));
-      setSelectedJob(null);
-      setJob(null);
-      setTab(job.status === "completed" ? "library" : "queue");
-      setConfirmDelete(false);
-      setToast(
-        cleaned
-          ? job.status === "failed"
-            ? "Failed attempt and cached files deleted."
-            : "Local files deleted."
-          : "Removed from Zimsmith. Remaining file cleanup will be retried on next launch.",
-      );
-    } catch (error) {
-      setError(friendlyError(error));
-      setConfirmDelete(false);
+      for (const target of deleteTargets) {
+        try {
+          const cleaned = await api.deleteJob(target.id, target.status);
+          deferred ||= !cleaned;
+          removed.add(target.id);
+          deletedJobs.current.add(target.id);
+        } catch (error) {
+          failures.push(friendlyError(error));
+        }
+      }
+      setJobs((items) => items.filter((item) => !removed.has(item.id)));
+      if (job && removed.has(job.id)) {
+        setSelectedJob(null);
+        setJob(null);
+        setTab(job.status === "completed" ? "library" : "queue");
+      }
+      if (removed.size) {
+        const result =
+          deleteTargets.length > 1
+            ? `${removed.size} failed ${removed.size === 1 ? "build" : "builds"} removed.`
+            : deleteTargets[0].status === "failed"
+              ? "Failed attempt and cached files deleted."
+              : "Local files deleted.";
+        setToast(
+          deferred
+            ? "Removed from Zimsmith. Remaining file cleanup will be retried on next launch."
+            : result,
+        );
+      }
+      if (failures.length) {
+        setError(
+          failures.length === 1
+            ? failures[0]
+            : `${failures.length} builds could not be deleted. ${failures[0]}`,
+        );
+      }
     } finally {
+      setDeleteTargets([]);
       setBusy(false);
     }
   };
@@ -412,6 +445,12 @@ export default function App() {
   const visibleJobs = jobs.filter((j) =>
     tab === "library" ? j.status === "completed" : j.status !== "completed",
   );
+  const failedJobs =
+    tab === "queue"
+      ? visibleJobs.filter((item) => item.status === "failed")
+      : [];
+  const deleteTarget = deleteTargets[0];
+  const deletingMultiple = deleteTargets.length > 1;
   const selectedEntries = job?.entries.filter((e) => selection.has(e.id)) || [];
   const knownSize = selectedEntries.reduce((sum, e) => sum + (e.size || 0), 0);
   const filterText = filter.toLowerCase();
@@ -1192,12 +1231,24 @@ export default function App() {
                 <div className="section-header">
                   <h2>
                     {tab === "queue"
-                      ? "In progress & awaiting review"
+                      ? "Builds & failed attempts"
                       : "Completed archives"}
                   </h2>
-                  <span className="muted">
-                    {visibleJobs.length} collections
-                  </span>
+                  <div className="collection-list-actions">
+                    <span className="muted">
+                      {visibleJobs.length} collections
+                    </span>
+                    {failedJobs.length > 1 && (
+                      <button
+                        className="button delete-outline"
+                        disabled={busy}
+                        onClick={() => askDelete(failedJobs)}
+                      >
+                        <Trash2 size={16} /> Clear failed builds (
+                        {failedJobs.length})
+                      </button>
+                    )}
+                  </div>
                 </div>
                 {visibleJobs.length ? (
                   visibleJobs.map((item) => (
@@ -1205,6 +1256,10 @@ export default function App() {
                       key={item.id}
                       item={item}
                       onClick={() => openJob(item)}
+                      onDelete={
+                        canDelete(item) ? () => askDelete([item]) : undefined
+                      }
+                      deleteDisabled={busy}
                       onOpen={
                         native && item.status === "completed"
                           ? () => openArchive(item.id)
@@ -1544,7 +1599,7 @@ export default function App() {
                   </div>
                 </section>
               )}
-              {canManageJob && (
+              {canDelete(job) && (
                 <section
                   className="panel rebuild-panel"
                   aria-labelledby="delete-attempt-title"
@@ -1582,11 +1637,11 @@ export default function App() {
                       </button>
                     )}
                     <button
-                      className="button secondary"
+                      className="button delete-outline"
                       disabled={busy}
-                      onClick={() => setConfirmDelete(true)}
+                      onClick={() => askDelete([job])}
                     >
-                      <Trash2 size={17} /> {deleteLabel}
+                      <Trash2 size={17} /> {deleteLabel(job.status)}
                     </button>
                   </div>
                 </section>
@@ -2282,11 +2337,11 @@ export default function App() {
         </main>
       </div>
 
-      {confirmDelete && job && (
+      {deleteTarget && (
         <div
           className="modal-backdrop"
           onClick={() => {
-            if (!busy) setConfirmDelete(false);
+            if (!busy) setDeleteTargets([]);
           }}
         >
           <section
@@ -2296,27 +2351,38 @@ export default function App() {
             aria-labelledby="delete-title"
             onClick={(e) => e.stopPropagation()}
           >
-            <h2 id="delete-title">{deleteLabel}?</h2>
+            <h2 id="delete-title">
+              {deletingMultiple
+                ? "Clear failed builds?"
+                : `${deleteLabel(deleteTarget.status)}?`}
+            </h2>
             <p>
-              Remove “{job.config.title}” and all its internal downloads and
-              cached files from this device. Exported ZIM copies stay unchanged.
-              This cannot be undone.
+              {deletingMultiple
+                ? `Remove ${deleteTargets.length} failed builds and their internal files from this device.`
+                : `Remove “${deleteTarget.title}” and all its internal downloads and cached files from this device.`}{" "}
+              Exported ZIM copies stay unchanged. This cannot be undone.
             </p>
             <div className="modal-actions">
               <button
                 className="button secondary"
                 disabled={busy}
-                onClick={() => setConfirmDelete(false)}
+                onClick={() => setDeleteTargets([])}
               >
-                {job.status === "failed" ? "Keep attempt" : "Cancel"}
+                {!deletingMultiple && deleteTarget.status === "failed"
+                  ? "Keep attempt"
+                  : "Cancel"}
               </button>
               <button
-                className="button primary"
+                className="button delete-solid"
                 disabled={busy}
-                onClick={() => void deleteJob()}
+                onClick={() => void deleteConfirmed()}
               >
                 <Trash2 size={17} />{" "}
-                {job.status === "failed" ? "Delete attempt" : deleteLabel}
+                {deletingMultiple
+                  ? `Delete ${deleteTargets.length} failed builds`
+                  : deleteTarget.status === "failed"
+                    ? "Delete attempt"
+                    : deleteLabel(deleteTarget.status)}
               </button>
             </div>
           </section>
@@ -2510,13 +2576,17 @@ function JobRow({
   item,
   onClick,
   onOpen,
+  onDelete,
+  deleteDisabled,
 }: {
   item: Job;
   onClick: () => void;
   onOpen?: () => void;
+  onDelete?: () => void;
+  deleteDisabled?: boolean;
 }) {
   return (
-    <div className="job-row-container">
+    <div className={`job-row-container${onDelete ? " has-delete" : ""}`}>
       <button
         className="job-row"
         onClick={onOpen || onClick}
@@ -2549,14 +2619,28 @@ function JobRow({
         <Status status={item.status} />
         {onOpen ? <ExternalLink size={18} /> : <ChevronRight size={18} />}
       </button>
-      {onOpen && (
-        <button
-          className="job-details"
-          onClick={onClick}
-          aria-label={`Details for ${item.config.title}`}
-        >
-          Details
-        </button>
+      {(onOpen || onDelete) && (
+        <div className="job-row-actions">
+          {onOpen && (
+            <button
+              className="job-details"
+              onClick={onClick}
+              aria-label={`Details for ${item.config.title}`}
+            >
+              Details
+            </button>
+          )}
+          {onDelete && (
+            <button
+              className="button delete-outline"
+              onClick={onDelete}
+              disabled={deleteDisabled}
+              aria-label={`${deleteLabel(item.status)} for ${item.config.title}`}
+            >
+              <Trash2 size={16} /> {deleteLabel(item.status)}
+            </button>
+          )}
+        </div>
       )}
     </div>
   );

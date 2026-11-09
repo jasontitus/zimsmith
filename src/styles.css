@@ -599,6 +599,23 @@ input:not([type="checkbox"]) {
 .button.secondary:hover {
   background: #f8f8fc;
 }
+.button.delete-outline {
+  min-height: 44px;
+  border: 1px solid #dfb6bd;
+  background: #fff;
+  color: #9b2338;
+}
+.button.delete-outline:hover {
+  background: #fff3f5;
+}
+.button.delete-solid {
+  min-height: 44px;
+  color: #fff;
+  background: #9b2338;
+}
+.button.delete-solid:hover {
+  background: #7f192c;
+}
 .archive-illustration {
   height: 202px;
   border: 1px solid #eeecf6;
@@ -884,6 +901,15 @@ input:not([type="checkbox"]) {
   min-width: 0;
   border-bottom: 0;
 }
+.job-row-actions {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.has-delete .job-row-actions {
+  gap: 8px;
+  padding: 8px 16px 8px 0;
+}
 .job-details {
   color: var(--purple);
   padding: 12px;
@@ -1014,7 +1040,13 @@ input:not([type="checkbox"]) {
 .collection-list > .section-header {
   padding: 24px;
 }
-.collection-list > .section-header > .muted {
+.collection-list-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.collection-list-actions > .muted {
   font-size: 11px;
 }
 .empty-large {
@@ -2009,13 +2041,21 @@ input:not([type="checkbox"]) {
   .job-row > svg {
     display: none;
   }
+  .job-row-container.has-delete {
+    flex-direction: column;
+  }
+  .has-delete .job-row-actions {
+    justify-content: flex-end;
+    padding: 0 14px 10px;
+  }
   .collection-list > .section-header {
     padding: 20px 16px;
+    flex-wrap: wrap;
   }
   .section-header h2 {
     font-size: 12px;
   }
-  .collection-list > .section-header > .muted {
+  .collection-list-actions > .muted {
     font-size: 9px;
   }
   .workflow-bar {

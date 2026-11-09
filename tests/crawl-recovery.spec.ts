@@ -1,11 +1,17 @@
 import { test, expect, Page } from "@playwright/test";
 
-async function failedPhone(page: Page, status = "failed", itemCount = 1) {
+async function failedPhone(
+  page: Page,
+  status = "failed",
+  itemCount = 1,
+  extraJobs = false,
+) {
   await page.addInitScript(
-    ({ status, itemCount }) => {
+    ({ status, itemCount, extraJobs }) => {
       const w = window as any;
       w.isTauri = true;
       w.recoveryCalls = [];
+      w.deleted = [];
       w.attempt = {
         id: "failed-fixture",
         status,
@@ -57,8 +63,32 @@ async function failedPhone(page: Page, status = "failed", itemCount = 1) {
           url: `https://example.test/${"long-path-segment/".repeat(7)}${i}`,
         }));
       }
+      w.otherJobs = extraJobs
+        ? [
+            {
+              ...w.attempt,
+              id: "second-failed",
+              config: { ...w.attempt.config, title: "Failed build two" },
+            },
+            {
+              ...w.attempt,
+              id: "paused-build",
+              status: "paused",
+              config: { ...w.attempt.config, title: "Paused build" },
+            },
+            {
+              ...w.attempt,
+              id: "running-build",
+              status: "packaging",
+              config: { ...w.attempt.config, title: "Running build" },
+            },
+          ]
+        : [];
       w.__TAURI_INTERNALS__ = {
-        invoke: async (command: string) => {
+        invoke: async (
+          command: string,
+          args: { id: string; expectedStatus?: string },
+        ) => {
           if (command === "capabilities")
             return {
               platform: "ios",
@@ -75,7 +105,8 @@ async function failedPhone(page: Page, status = "failed", itemCount = 1) {
             };
           if (command === "get_shared_links" || command === "archive_templates")
             return [];
-          if (command === "list_jobs") return w.attempt ? [w.attempt] : [];
+          if (command === "list_jobs")
+            return [...(w.attempt ? [w.attempt] : []), ...w.otherJobs];
           if (command === "get_job") {
             if (!w.attempt) throw new Error("Job not found");
             return w.attempt;
@@ -93,14 +124,19 @@ async function failedPhone(page: Page, status = "failed", itemCount = 1) {
             return w.attempt;
           }
           if (command === "delete_job") {
-            w.attempt = null;
+            w.deleted.push(args);
+            if (args.id === w.attempt?.id) w.attempt = null;
+            else
+              w.otherJobs = w.otherJobs.filter(
+                (j: { id: string }) => j.id !== args.id,
+              );
             return true;
           }
           throw new Error(`Unexpected command: ${command}`);
         },
       };
     },
-    { status, itemCount },
+    { status, itemCount, extraJobs },
   );
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
@@ -134,6 +170,46 @@ test("phone retry is beside the error and resumes the saved crawl", async ({
     "resume_job",
   ]);
   await expect(retry).toHaveCount(0);
+});
+
+test("Activity exposes row deletion and clears only the confirmed failed builds", async ({
+  page,
+}) => {
+  await failedPhone(page, "failed", 1, true);
+  await page.getByRole("button", { name: "All activity", exact: true }).click();
+  const deleteRow = page.getByRole("button", {
+    name: "Delete failed attempt for Interrupted collection",
+  });
+  await expect(deleteRow).toBeVisible();
+  await deleteRow.click();
+  const single = page.getByRole("dialog", { name: "Delete failed attempt?" });
+  await expect(single).toContainText("Interrupted collection");
+  await single.getByRole("button", { name: "Keep attempt" }).click();
+  const paused = page.getByRole("button", {
+    name: "Delete build for Paused build",
+  });
+  await expect(paused).toBeVisible();
+  await expect(
+    page
+      .locator(".job-row-container")
+      .filter({ hasText: "Running build" })
+      .getByRole("button", { name: /delete/i }),
+  ).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "Clear failed builds (2)", exact: true })
+    .click();
+  const bulk = page.getByRole("dialog", { name: "Clear failed builds?" });
+  await expect(bulk).toContainText("Remove 2 failed builds");
+  await bulk.getByRole("button", { name: "Delete 2 failed builds" }).click();
+  await expect(deleteRow).toHaveCount(0);
+  await expect(paused).toBeVisible();
+  expect(await page.evaluate(() => (window as any).deleted)).toEqual([
+    { id: "failed-fixture", expectedStatus: "failed" },
+    { id: "second-failed", expectedStatus: "failed" },
+  ]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(
+    390,
+  );
 });
 
 test("phone review uses readable rows and page scrolling with working selection and filtering", async ({

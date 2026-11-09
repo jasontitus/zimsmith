@@ -1100,6 +1100,11 @@ async fn storage_cleanup_preserves_rebuild_inputs_and_deletion_preserves_exporte
     assert_eq!(engine.clean_build("completed").await.unwrap(), 0);
     assert!(archive.is_file());
     assert!(completed.join("cache/home.html").is_file());
+    assert!(engine
+        .delete_stopped("completed", Some("failed"))
+        .await
+        .is_err());
+    assert!(archive.is_file());
     assert!(engine.delete_job("completed").await.unwrap());
     assert!(!completed.exists());
     assert_eq!(

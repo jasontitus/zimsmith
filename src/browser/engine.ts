@@ -374,6 +374,10 @@ export class BrowserEngine {
           throw new Error("Pause the job and wait for it to stop first.");
         if (command === "clean_build")
           return this.store.cleanBuild(id, job.output_file);
+        if (args.expectedStatus != null && job.status !== args.expectedStatus)
+          throw new Error(
+            "This job changed since you selected it. Review its current status before deleting it.",
+          );
         const cleaned = await this.store.removeJob(id);
         this.jobs.delete(id);
         return cleaned;

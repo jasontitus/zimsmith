@@ -80,10 +80,10 @@ const bridgedApi = {
     native
       ? invoke<Job>("refresh_job", { id })
       : request<Job>(`/jobs/${id}/refresh`, {}),
-  deleteJob: (id: string) =>
+  deleteJob: (id: string, expectedStatus: string) =>
     native
-      ? invoke<boolean>("delete_job", { id })
-      : request<boolean>(`/jobs/${id}/delete`, {}),
+      ? invoke<boolean>("delete_job", { id, expectedStatus })
+      : request<boolean>(`/jobs/${id}/delete`, { expectedStatus }),
   cleanBuild: (id: string) =>
     native
       ? invoke<number>("clean_build", { id })

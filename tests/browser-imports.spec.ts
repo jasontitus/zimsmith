@@ -192,7 +192,14 @@ else:
           }, id),
         ).toBe(true);
         await page
-          .getByRole("button", { name: "Delete archive", exact: true })
+          .getByRole("button", { name: /My archives/ })
+          .first()
+          .click();
+        await page
+          .getByRole("button", {
+            name: "Delete archive for Saved garden",
+            exact: true,
+          })
           .click();
         const deleteDialog = page.getByRole("dialog", {
           name: "Delete archive?",

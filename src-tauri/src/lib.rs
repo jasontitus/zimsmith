@@ -215,13 +215,17 @@ async fn delete_job(
     app: tauri::AppHandle,
     engine: State<'_, Engine>,
     id: String,
+    expected_status: Option<String>,
 ) -> Result<bool, String> {
     let _handoff = ARCHIVE_HANDOFF.lock().await;
     let exports = archive_exports(&app)?;
     if !is_archive_id(&id) {
         return Err("Invalid archive ID".into());
     }
-    let cleaned = engine.delete_job(&id).await.map_err(|e| format!("{e:#}"))?;
+    let cleaned = engine
+        .delete_stopped(&id, expected_status.as_deref())
+        .await
+        .map_err(|e| format!("{e:#}"))?;
     Ok(remove_staged_archive(exports.join(id)).await && cleaned)
 }
 

@@ -545,21 +545,24 @@ impl Engine {
     /// Remove a stopped failed attempt and its internal files, never exported copies.
     /// Returns false if disk cleanup must be retried on the next app launch.
     pub async fn delete_failed(&self, id: &str) -> Result<bool> {
-        self.delete_stopped(id, true).await
+        self.delete_stopped(id, Some("failed")).await
     }
 
     /// Remove a stopped job and all of its local working files.
     pub async fn delete_job(&self, id: &str) -> Result<bool> {
-        self.delete_stopped(id, false).await
+        self.delete_stopped(id, None).await
     }
 
-    async fn delete_stopped(&self, id: &str, failed_only: bool) -> Result<bool> {
+    pub async fn delete_stopped(&self, id: &str, expected_status: Option<&str>) -> Result<bool> {
         let mut records = self.jobs.write().await;
         let record = records.get(id).cloned().context("Job not found")?;
         let mut job = record.job.lock().await;
         anyhow::ensure!(
-            (!failed_only || job.status == "failed")
-                && ["failed", "paused", "review", "completed"].contains(&job.status.as_str())
+            expected_status.is_none_or(|expected| job.status == expected),
+            "This job changed since you selected it. Review its current status before deleting it"
+        );
+        anyhow::ensure!(
+            ["failed", "paused", "review", "completed"].contains(&job.status.as_str())
                 && !record.running.load(Ordering::SeqCst),
             "Pause the job and wait for it to stop before deleting it"
         );
