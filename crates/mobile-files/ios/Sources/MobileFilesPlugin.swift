@@ -1,7 +1,6 @@
 import Foundation
 import Tauri
 import UIKit
-import UniformTypeIdentifiers
 import WebKit
 
 private struct FileArgs: Decodable {
@@ -11,7 +10,7 @@ private struct FileArgs: Decodable {
 
 private struct SharedLinkArgs: Decodable { let id: String }
 
-final class MobileFilesPlugin: Plugin, UIDocumentPickerDelegate, UIDocumentInteractionControllerDelegate {
+final class MobileFilesPlugin: Plugin, UIDocumentPickerDelegate {
     private var captures: [String: PageCapture] = [:]
     private var captureSession: PageCaptureSession?
     @objc public func renderPage(_ invoke: Invoke) throws {
@@ -46,7 +45,6 @@ final class MobileFilesPlugin: Plugin, UIDocumentPickerDelegate, UIDocumentInter
         } catch { invoke.reject(error.localizedDescription) }
     }
     private var pendingSave: Invoke?
-    private var documentController: UIDocumentInteractionController?
 
     @objc public override func load(webview: WKWebView) {
         DispatchQueue.main.async {
@@ -107,19 +105,17 @@ final class MobileFilesPlugin: Plugin, UIDocumentPickerDelegate, UIDocumentInter
                 invoke.reject("Close the current dialog before opening an archive")
                 return
             }
-            let document = UIDocumentInteractionController(url: url)
-            document.name = url.lastPathComponent
-            document.uti = UTType(filenameExtension: "zim")?.identifier ?? "org.openzim.zim"
-            document.delegate = self
-            self.documentController = document
-            let view = presenter.view!
-            let anchor = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 1, height: 1)
-            if document.presentOpenInMenu(from: anchor, in: view, animated: true) {
-                invoke.resolve(["opened": true])
+            let sheet = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+            if presenter.traitCollection.userInterfaceIdiom == .pad, let view = presenter.view {
+                sheet.modalPresentationStyle = .popover
+                sheet.popoverPresentationController?.sourceView = view
+                sheet.popoverPresentationController?.sourceRect = view.safeAreaLayoutGuide.layoutFrame
+                sheet.popoverPresentationController?.permittedArrowDirections = []
             } else {
-                self.documentController = nil
-                invoke.reject("No ZIM viewer is installed. Install a compatible viewer, then tap Open ZIM again.")
+                sheet.modalPresentationStyle = .pageSheet
             }
+            presenter.present(sheet, animated: true)
+            invoke.resolve(["opened": true])
         }
     }
 }
