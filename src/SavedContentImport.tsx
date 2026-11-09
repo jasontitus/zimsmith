@@ -75,7 +75,10 @@ export function SavedContentImport({
     ? (processingProgress?.completed ?? 0)
     : received;
   const stepTotal = processingId ? (processingProgress?.total ?? null) : total;
-  const measured = stepTotal != null && stepTotal > 0 && stepDone < stepTotal;
+  const percent =
+    stepTotal != null && stepTotal > 0 && stepDone < stepTotal
+      ? Math.floor((stepDone / stepTotal) * 100)
+      : null;
   const { timing } = useProgressTiming(
     busy && mode === "files" ? step : null,
     stepDone,
@@ -364,13 +367,18 @@ export function SavedContentImport({
         )}
         {busy && (
           <div className="import-progress" role="status">
-            <p>{mode === "files" ? step : "Starting URL scan…"}</p>
+            <p>
+              {mode === "files" ? step : "Starting URL scan…"}
+              {mode === "files" && percent != null && (
+                <strong> · {percent}% of this step</strong>
+              )}
+            </p>
             {mode === "files" && (
               <>
                 <progress
                   aria-label={step}
-                  max={measured ? stepTotal : undefined}
-                  value={measured ? stepDone : undefined}
+                  max={percent != null ? (stepTotal ?? undefined) : undefined}
+                  value={percent != null ? stepDone : undefined}
                 />
                 {processingId ? (
                   <p>

@@ -271,6 +271,9 @@ test("saved-file progress switches from copying to WARC reading and preparation"
   });
   await expect(reading).toHaveAttribute("value", "262144");
   await expect(page.locator(".import-progress")).toContainText(
+    "25% of this step",
+  );
+  await expect(page.locator(".import-progress")).toContainText(
     "0.3 MB of 1.0 MB",
   );
   await page.evaluate(() => {
@@ -287,7 +290,26 @@ test("saved-file progress switches from copying to WARC reading and preparation"
     }),
   ).toHaveAttribute("value", "10");
   await expect(page.locator(".import-progress")).toContainText(
+    "10% of this step",
+  );
+  await expect(page.locator(".import-progress")).toContainText(
     "10 of 100 files",
   );
   await expect(reading).toHaveCount(0);
+  await page.evaluate(() => {
+    Object.assign(Reflect.get(window, "importProgressFixture"), {
+      label: "Saving review and cleaning up temporary files",
+      completed: 0,
+      total: null,
+      unit: "",
+    });
+  });
+  await expect(
+    page.getByRole("progressbar", {
+      name: "Saving review and cleaning up temporary files",
+    }),
+  ).not.toHaveAttribute("value");
+  await expect(page.locator(".import-progress")).not.toContainText(
+    "% of this step",
+  );
 });
