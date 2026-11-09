@@ -34,7 +34,11 @@ export async function writeZim(
   file: SyncFile,
   source: ZimItem[],
   check: () => void,
-  progress: (done: number, total: number) => Promise<void>,
+  progress: (
+    done: number,
+    total: number,
+    step: "files" | "checksum",
+  ) => Promise<void>,
   mainPath = "index.html",
 ) {
   const items = [...source];
@@ -107,9 +111,9 @@ export async function writeZim(
           await blob.slice(start, start + 1024 * 1024).arrayBuffer(),
         ),
       );
-      await progress(i, items.length);
+      await progress(i, items.length, "files");
     }
-    await progress(i + 1, items.length);
+    await progress(i + 1, items.length, "files");
   }
   const dirents = items.map((item, i) => {
     const name = text(item.path + "\0" + item.title + "\0"),
@@ -163,13 +167,14 @@ export async function writeZim(
   file.flush();
   const md5 = new SparkMD5.ArrayBuffer(),
     buffer = new Uint8Array(1024 * 1024);
+  await progress(0, checksumPos, "checksum");
   for (let at = 0; at < checksumPos; at += buffer.length) {
     check();
     const part = buffer.subarray(0, Math.min(buffer.length, checksumPos - at));
     if (file.read(part, { at }) !== part.length)
       throw new Error("ZIM verification encountered a truncated file.");
     md5.append(part.slice().buffer);
-    await progress(items.length, items.length);
+    await progress(at + part.length, checksumPos, "checksum");
   }
   write(Uint8Array.from(md5.end(true), (c) => c.charCodeAt(0)));
   file.flush();
@@ -183,7 +188,11 @@ export async function writeZim(
 export async function verifyZim(
   file: SyncFile,
   check: () => void,
-  progress: (done: number, total: number) => Promise<void>,
+  progress: (
+    done: number,
+    total: number,
+    step: "directory" | "checksum",
+  ) => Promise<void>,
   mainPath = "index.html",
 ) {
   const size = file.getSize(),
@@ -274,7 +283,7 @@ export async function verifyZim(
     if (i && compare(records[i - 1].key, key) >= 0)
       throw new Error("ZIM path index is not sorted.");
     records.push({ key, title: title.value, namespace });
-    if (i % 500 === 0) await progress(i, entries);
+    if (i % 500 === 0) await progress(i, entries, "directory");
   }
   if (
     records[main].key !== `C/${mainPath}` ||
@@ -314,13 +323,14 @@ export async function verifyZim(
   }
   const hash = new SparkMD5.ArrayBuffer(),
     buffer = new Uint8Array(1024 * 1024);
+  await progress(0, end, "checksum");
   for (let offset = 0; offset < end; offset += buffer.length) {
     check();
     const part = buffer.subarray(0, Math.min(buffer.length, end - offset));
     if (file.read(part, { at: offset }) !== part.length)
       throw new Error("Finished ZIM is truncated.");
     hash.append(part.slice().buffer);
-    await progress(offset + part.length, end);
+    await progress(offset + part.length, end, "checksum");
   }
   const expected = new Uint8Array(16);
   if (

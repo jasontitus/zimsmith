@@ -29,7 +29,13 @@ pub(crate) fn main_path(job: &Job) -> String {
 }
 
 pub async fn package(record: &Record) -> Result<()> {
+    record
+        .progress("Checking saved stylesheets", 0, None, "")
+        .await;
     crate::web::repair_saved_stylesheets(record).await?;
+    record
+        .progress("Checking saved video artwork", 0, None, "")
+        .await;
     crate::thumbnails::prepare(record).await?;
     let job = record.job.lock().await.clone();
     anyhow::ensure!(
@@ -100,10 +106,24 @@ pub async fn package(record: &Record) -> Result<()> {
         .copied()
         .filter(|url| !job.resources.get(*url).is_some_and(|r| r.state == "done"))
         .count();
-    for &url in &needed {
-        let Some(resource) = job.resources.get(url).filter(|r| r.state == "done") else {
-            continue;
-        };
+    let assets: Vec<_> = needed
+        .iter()
+        .filter_map(|&url| {
+            job.resources
+                .get(url)
+                .filter(|r| r.state == "done")
+                .map(|r| (url, r))
+        })
+        .collect();
+    for (index, &(url, resource)) in assets.iter().enumerate() {
+        record
+            .progress(
+                "Preparing offline assets",
+                index as u64,
+                Some(assets.len() as u64),
+                "files",
+            )
+            .await;
         let from = record.dir.join("cache").join(&resource.path);
         if resource.mime.contains("text/css") {
             let css = tokio::fs::read_to_string(&from).await?;
@@ -133,7 +153,7 @@ pub async fn package(record: &Record) -> Result<()> {
     for (index, entry) in selected.iter().enumerate() {
         record
             .progress(
-                format!("Preparing and indexing {}", entry.title),
+                "Preparing pages and indexing text",
                 index as u64,
                 Some(selected.len() as u64),
                 "items",
@@ -200,9 +220,9 @@ pub async fn package(record: &Record) -> Result<()> {
                     record
                         .progress(
                             format!("Combining audio and video: {}", entry.title),
-                            index as u64,
-                            Some(selected.len() as u64),
-                            "items",
+                            0,
+                            None,
+                            "",
                         )
                         .await;
                     crate::mux::combine(
@@ -228,6 +248,9 @@ pub async fn package(record: &Record) -> Result<()> {
         tokio::fs::write(content.join(format!("{}.html", entry.id)), page).await?;
         catalog.add(&catalog_entry, &item_kind);
     }
+    record
+        .progress("Creating the capture report", 0, None, "")
+        .await;
     let report = crate::capture_report::write(
         record,
         &job,
@@ -239,6 +262,9 @@ pub async fn package(record: &Record) -> Result<()> {
         simplified_pages,
     )
     .await?;
+    record
+        .progress("Saving contents and search index", 0, None, "")
+        .await;
     let index = templates::render_index(job.archive_template, &job.config, &catalog, false)?;
     tokio::fs::write(content.join("index.html"), index).await?;
     tokio::fs::write(content.join("search.js"), templates::SEARCH_JS).await?;
@@ -297,6 +323,9 @@ pub async fn package(record: &Record) -> Result<()> {
     creator.start_writing(&partial)?;
     #[cfg(feature = "kiwix-index")]
     add_kiwix_indexes(record, &job, &selected, &content, &mut creator).await?;
+    record
+        .progress("Listing files for the ZIM writer", 0, None, "")
+        .await;
     let mut directory = tokio::fs::read_dir(&content).await?;
     let mut files = Vec::new();
     while let Some(file) = directory.next_entry().await? {
@@ -322,7 +351,7 @@ pub async fn package(record: &Record) -> Result<()> {
         }
         record
             .progress(
-                format!("Writing {filename} to the ZIM"),
+                "Writing files to the ZIM",
                 index as u64,
                 Some(files.len() as u64),
                 "files",
@@ -374,14 +403,9 @@ pub async fn package(record: &Record) -> Result<()> {
         creator.end_chunked_item()?;
     }
     record
-        .progress(
-            "Finalizing the ZIM directory and checksum",
-            files.len() as u64,
-            None,
-            "files",
-        )
+        .progress("Finalizing the ZIM directory and checksum", 0, None, "")
         .await;
-    creator.finish_writing()?;
+    tokio::task::spawn_blocking(move || creator.finish_writing()).await??;
     let size = tokio::fs::metadata(&partial).await?.len();
     anyhow::ensure!(size > 80, "Writer produced an empty archive");
     let mut header = [0u8; 4];
@@ -394,6 +418,9 @@ pub async fn package(record: &Record) -> Result<()> {
         "Writer output is not a ZIM file"
     );
     let validation = crate::capture_report::validate(record, &partial).await?;
+    record
+        .progress("Saving the verified ZIM", 0, None, "")
+        .await;
     let final_path = record.dir.join("archive.zim");
     // Same-directory rename replaces atomically, preserving the old ZIM on failure.
     tokio::fs::rename(&partial, &final_path).await?;
@@ -432,7 +459,15 @@ async fn add_kiwix_indexes(
                 mode,
             },
         )?;
-        for entry in selected {
+        for (index, entry) in selected.iter().enumerate() {
+            record
+                .progress(
+                    format!("Building Kiwix {name} index"),
+                    index as u64,
+                    Some(selected.len() as u64),
+                    "items",
+                )
+                .await;
             let page_path = format!("{}.html", entry.id);
             match mode {
                 Mode::Title => builder.add_title(&page_path, &entry.title, "", "")?,
@@ -454,6 +489,9 @@ async fn add_kiwix_indexes(
             }
             tokio::task::yield_now().await;
         }
+        record
+            .progress(format!("Saving Kiwix {name} index"), 0, None, "")
+            .await;
         builder.finalize()?;
         let data = tokio::fs::read(&path).await?;
         creator.try_add_item(

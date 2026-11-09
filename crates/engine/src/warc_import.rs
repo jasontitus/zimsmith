@@ -6,6 +6,7 @@ use std::{
     io::{self, BufRead, BufReader, Read, Write},
     path::Path,
     sync::{atomic::Ordering, Arc},
+    time::{Duration, Instant},
 };
 use warc::{RecordType, WarcHeader, WarcReader};
 const HEADER_LIMIT: usize = 64 * 1024;
@@ -162,6 +163,32 @@ pub(crate) struct Expansion {
     pub budget_used: u64,
 }
 
+// Count bytes from the original file, including compressed input, without
+// seeking the parser or retaining the expanded WARC in memory.
+struct TrackedInput<'a> {
+    file: std::fs::File,
+    read: u64,
+    last_update: Instant,
+    control: &'a Record,
+}
+
+impl Read for TrackedInput<'_> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        let count = self.file.read(out)?;
+        self.read += count as u64;
+        if (count == 0 || self.last_update.elapsed() >= Duration::from_millis(300))
+            && !self.control.import_cancel.load(Ordering::SeqCst)
+        {
+            if let Ok(mut job) = self.control.job.try_lock() {
+                job.progress.completed = self.read;
+                job.progress.updated_at = crate::now();
+                self.last_update = Instant::now();
+            }
+        }
+        Ok(count)
+    }
+}
+
 pub(crate) fn expand(
     file: &Path,
     gzip: bool,
@@ -170,8 +197,13 @@ pub(crate) fn expand(
     file_cap: u64,
     control: Arc<Record>,
 ) -> Result<Expansion> {
-    let input = std::fs::File::open(file)?;
-    let input: Box<dyn Read> = if gzip {
+    let input = TrackedInput {
+        file: std::fs::File::open(file)?,
+        read: 0,
+        last_update: Instant::now(),
+        control: &control,
+    };
+    let input: Box<dyn Read + '_> = if gzip {
         Box::new(flate2::read::MultiGzDecoder::new(input))
     } else {
         Box::new(input)
@@ -197,12 +229,6 @@ pub(crate) fn expand(
             count <= MAX_RECORDS,
             "WARC exceeds the {MAX_RECORDS}-record limit"
         );
-        if let Ok(mut job) = control.job.try_lock() {
-            job.progress.label = format!("Reading WARC record {count}");
-            job.progress.completed = count as u64;
-            job.progress.unit = "records".into();
-            job.progress.updated_at = crate::now();
-        }
         let kind = record.warc_type().clone();
         if !matches!(kind, RecordType::Response | RecordType::Resource) {
             if matches!(

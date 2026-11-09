@@ -271,6 +271,9 @@ pub async fn write(
 pub async fn validate(record: &Record, path: &std::path::Path) -> Result<Validation> {
     use md5::{Digest, Md5};
     use tokio::io::AsyncReadExt;
+    record
+        .progress("Checking ZIM directory and starting page", 0, None, "")
+        .await;
     let archive = zimru::Archive::open(path).context("Could not reopen the finished ZIM")?;
     anyhow::ensure!(
         archive.check_dirent_ptrs()?
@@ -299,6 +302,9 @@ pub async fn validate(record: &Record, path: &std::path::Path) -> Result<Validat
     let mut buffer = vec![0; 1024 * 1024];
     let mut at = 0;
     let mut digest = Md5::new();
+    record
+        .progress("Verifying finished ZIM checksum", 0, Some(end), "bytes")
+        .await;
     while at < end {
         let n = buffer.len().min((end - at) as usize);
         file.read_exact(&mut buffer[..n]).await?;

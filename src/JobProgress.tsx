@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
 import { LoaderCircle, Pause, AlertCircle, Clock3 } from "lucide-react";
+import { progressCount, useProgressTiming } from "./progressTiming";
 import type { Job } from "./types";
 
 function size(bytes: number) {
@@ -15,12 +15,6 @@ export function JobProgress({
   job: Job;
   compact?: boolean;
 }) {
-  const [now, setNow] = useState(() => Date.now() / 1000);
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now() / 1000), 1000);
-    return () => clearInterval(timer);
-  }, []);
-  if (["completed", "review"].includes(job.status)) return null;
   const progress = job.progress;
   const running = [
     "scanning",
@@ -29,11 +23,8 @@ export function JobProgress({
     "pausing",
     "importing",
   ].includes(job.status);
-  const waiting =
-    running &&
-    job.phase !== "package" &&
-    Boolean(job.retry_at && job.retry_at > now);
   const scan = job.phase === "scan";
+  const packaging = job.phase === "package";
   const selected = job.entries.filter((entry) => entry.selected);
   const done = selected.filter((entry) => entry.state === "done").length;
   const failedAssets = job.asset_summary?.failed || 0;
@@ -48,9 +39,21 @@ export function JobProgress({
     ? job.config.kind === "website"
       ? "items scanned"
       : "items found"
-    : progress?.unit || "items";
+    : (progress?.unit ?? "items");
+  const showTiming = running && (packaging || job.phase === "import");
+  const { now, timing } = useProgressTiming(
+    running
+      ? `${job.id}:${job.phase}:${showTiming ? progress?.label || "" : ""}`
+      : null,
+    showTiming ? completed : 0,
+    showTiming ? total : null,
+  );
+  if (["completed", "review"].includes(job.status)) return null;
+  const waiting =
+    running && !packaging && Boolean(job.retry_at && job.retry_at > now);
+  const finishing = running && total != null && total > 0 && completed >= total;
   const percent =
-    total && total > 0
+    total && total > 0 && !finishing
       ? Math.min(100, Math.floor((completed / total) * 100))
       : null;
   const elapsed = Math.max(
@@ -78,6 +81,9 @@ export function JobProgress({
       : job.status === "paused"
         ? Pause
         : LoaderCircle;
+  const count = scan
+    ? `${completed} ${unit}${job.queued_pages ? ` · ${job.queued_pages} pages queued` : ""}`
+    : progressCount(completed, total, unit);
   return (
     <section
       className={`job-progress${compact ? " compact" : ""}${running && !waiting ? " active" : ""}`}
@@ -96,9 +102,8 @@ export function JobProgress({
                 : "Downloading collection"}
         </strong>
         <span>
-          {percent === null
-            ? `${completed} ${unit}${scan && job.queued_pages ? ` · ${job.queued_pages} pages queued` : ""}`
-            : `${completed} of ${total} ${unit} · ${percent}%`}
+          {count}
+          {percent != null ? ` · ${percent}%` : ""}
         </span>
       </div>
       <div
@@ -108,15 +113,17 @@ export function JobProgress({
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={percent ?? undefined}
-        aria-valuetext={
-          percent === null
-            ? `${completed} ${unit}; total not known yet`
-            : `${completed} of ${total} ${unit}`
-        }
+        aria-valuetext={finishing ? "Finishing this step" : count || undefined}
       >
         <div style={{ width: percent === null ? undefined : `${percent}%` }} />
       </div>
-      <p className="progress-detail">{label}</p>
+      <p className="progress-detail">
+        {label}
+        {finishing && " · Finishing this step…"}
+      </p>
+      {showTiming && !waiting && job.status !== "pausing" && (
+        <p className="progress-detail">{timing}</p>
+      )}
       {job.status === "downloading" &&
         progress?.active_asset_requests != null && (
           <p className="progress-detail">
@@ -152,7 +159,7 @@ export function JobProgress({
       {!compact &&
         Boolean(progress && (progress.received > 0 || progress.expected)) && (
           <div className="transfer-progress">
-            <span>Current file</span>
+            <span>{packaging ? "Current file written" : "Current file"}</span>
             <strong>
               {size(progress!.received)}
               {progress!.expected
@@ -161,19 +168,26 @@ export function JobProgress({
             </strong>
             {progress!.expected && (
               <progress
-                aria-label="Current file download"
+                aria-label={
+                  packaging ? "Current file written" : "Current file download"
+                }
                 value={progress!.received}
                 max={progress!.expected}
               />
             )}
           </div>
         )}
-      {!compact && running && !waiting && elapsed >= 45 && (
-        <p className="alert warning">
-          No new activity for {elapsed}s. The current step may be stalled. Pause
-          and resume to retry from saved checkpoints.
-        </p>
-      )}
+      {!compact &&
+        running &&
+        !waiting &&
+        !packaging &&
+        job.phase !== "import" &&
+        elapsed >= 45 && (
+          <p className="alert warning">
+            No new activity for {elapsed}s. The current step may be stalled.
+            Pause and resume to retry from saved checkpoints.
+          </p>
+        )}
       {!compact && (
         <div className="progress-footer">
           <span>

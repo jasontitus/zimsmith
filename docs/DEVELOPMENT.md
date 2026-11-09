@@ -44,7 +44,7 @@ Tap a completed collection or **Open ZIM** to hand it to a viewer. Desktop and A
 
 The app viewport is fixed to its native scale. iOS and Android webviews disable pinch zoom, and mobile inputs are at least 16px to prevent focus zoom. Exported website pages and archive templates keep their normal reader behavior.
 
-Active jobs show their current operation, stage progress, current-file bytes, request/failure counts, and time since the last activity. Discovery and finalization use indeterminate progress when a total is unknown. Transfer updates stay in memory between normal checkpoints. Activity logs use larger, higher-contrast text, with separate warning and error colors.
+Active jobs show their current operation, stage progress, current-file bytes, request/failure counts, and time since the last activity. Imports separate file copying, WARC reading or ZIP extraction, and preparation for review. Native WARC reading measures bytes from the original file, including compressed input. Archive building shows preparation, indexing, writing, and validation separately. Imports and builds show time spent in the current step and estimate time left in that step from recent measurable progress. Steps without a measurable total show an indeterminate bar and elapsed time. Transfer updates stay in memory between normal checkpoints.
 
 YouTube media transfers use bounded ranges, including the provider's range-query protocol and signed file size. Requests do not extend past the resource end. A denied request stops with an error rather than repeatedly requesting the same forbidden URL. The app's preferred player profile is the current visionOS profile recorded in the RustyPipe provenance file.
 

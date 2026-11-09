@@ -152,7 +152,7 @@ export async function prepareImport(
         check,
         async (count) => {
           job.progress = {
-            label: `Reading WARC record ${count}`,
+            label: `Reading WARC: ${upload.path}`,
             completed: count,
             total: null,
             unit: "records",
@@ -225,7 +225,7 @@ export async function prepareImport(
         }
         add({ path, file: target, size: copied });
         job.progress = {
-          label: `Extracting ${path}`,
+          label: `Extracting ZIP: ${upload.path}`,
           completed: count,
           total: null,
           unit: "files",
@@ -241,7 +241,7 @@ export async function prepareImport(
   }
   const entries: BrowserEntry[] = [],
     resources: Record<string, Receipt> = {};
-  for (const payload of payloads) {
+  for (const [index, payload] of payloads.entries()) {
     check();
     const url =
       payload.url ||
@@ -294,9 +294,9 @@ export async function prepareImport(
       });
     }
     job.progress = {
-      label: `Preparing ${payload.path}`,
-      completed: entries.length,
-      total: null,
+      label: "Preparing captured pages and assets",
+      completed: index + 1,
+      total: payloads.length,
       unit: "files",
       received: 0,
       expected: null,

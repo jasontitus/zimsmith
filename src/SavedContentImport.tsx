@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Archive, FolderOpen, Upload, X } from "lucide-react";
 import { api, native, savedImports } from "./api";
 import { normalizedCapture } from "./capture";
+import { progressCount, useProgressTiming } from "./progressTiming";
 import { normalizeSourceUrl } from "./source";
 import type { Config, Job } from "./types";
 
@@ -32,8 +33,10 @@ export function SavedContentImport({
   const [title, setTitle] = useState(resumeId ? config.title : "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [status, setStatus] = useState("");
   const [received, setReceived] = useState(0);
+  const [processingId, setProcessingId] = useState<string | null>(null);
+  const [processingProgress, setProcessingProgress] =
+    useState<Job["progress"]>();
   const active = useRef(false);
   const stop = useRef(false),
     attempt = useRef<string | null>(null);
@@ -49,26 +52,41 @@ export function SavedContentImport({
     [],
   );
   useEffect(() => {
-    if (!busy) return;
-    const timer = setInterval(() => {
-      if (attempt.current)
-        void api
-          .get(attempt.current)
-          .then((job) => {
-            if (job.progress?.label) setStatus(job.progress.label);
-          })
-          .catch(() => {});
-    }, 1500);
-    return () => clearInterval(timer);
-  }, [busy]);
+    if (!processingId) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      const job = await api.get(processingId).catch(() => null);
+      if (stopped) return;
+      if (job?.progress?.label) setProcessingProgress(job.progress);
+      timer = setTimeout(poll, 1000);
+    };
+    timer = setTimeout(poll, 250);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [processingId]);
   const total = files.reduce((sum, file) => sum + file.size, 0);
+  const step = processingId
+    ? processingProgress?.label || "Opening saved files"
+    : "Copying files into Zimsmith";
+  const stepDone = processingId
+    ? (processingProgress?.completed ?? 0)
+    : received;
+  const stepTotal = processingId ? (processingProgress?.total ?? null) : total;
+  const measured = stepTotal != null && stepTotal > 0 && stepDone < stepTotal;
+  const { timing } = useProgressTiming(
+    busy && mode === "files" ? step : null,
+    stepDone,
+    stepTotal,
+  );
   const nativeWarc =
     native && files.some((file) => /\.warc(?:\.gz)?$/i.test(file.name));
   const path = (file: File) => file.webkitRelativePath || file.name;
   const choose = async (selected: File[]) => {
     setError("");
     setReceived(0);
-    setStatus("");
     if (selected.length === 1 && /\.(txt|urls)$/i.test(selected[0].name)) {
       if (selected[0].size > 1024 * 1024) {
         setError("URL lists must be at most 1 MB.");
@@ -96,6 +114,8 @@ export function SavedContentImport({
   };
   const start = async () => {
     setError("");
+    setReceived(0);
+    setProcessingProgress(undefined);
     active.current = true;
     setBusy(true);
     onBusyChange(true);
@@ -175,13 +195,12 @@ export function SavedContentImport({
             encoded(bytes),
           );
           setReceived(completed + offset);
-          setStatus(`Importing ${path(file)}`);
         }
         completed += file.size;
       }
       if (stop.current)
         throw new Error("Import stopped. Reselect the saved files to resume.");
-      setStatus("Preparing imported files. No internet requests.");
+      setProcessingId(job.id);
       const ready = await savedImports.finish(job.id);
       attempt.current = null;
       onCreated(ready);
@@ -199,6 +218,7 @@ export function SavedContentImport({
       setError(error instanceof Error ? error.message : String(error));
     } finally {
       active.current = false;
+      setProcessingId(null);
       setBusy(false);
       onBusyChange(false);
     }
@@ -344,17 +364,28 @@ export function SavedContentImport({
         )}
         {busy && (
           <div className="import-progress" role="status">
-            <p>{status || "Preparing import…"}</p>
+            <p>{mode === "files" ? step : "Starting URL scan…"}</p>
             {mode === "files" && (
               <>
                 <progress
-                  aria-label="Saved file import progress"
-                  max={Math.max(1, total)}
-                  value={received}
+                  aria-label={step}
+                  max={measured ? stepTotal : undefined}
+                  value={measured ? stepDone : undefined}
                 />
-                <p>
-                  {size(received)} of {size(total)}
-                </p>
+                {processingId ? (
+                  <p>
+                    {progressCount(
+                      stepDone,
+                      stepTotal,
+                      processingProgress?.unit || "",
+                    )}
+                  </p>
+                ) : (
+                  <p>
+                    {size(received)} of {size(total)} copied
+                  </p>
+                )}
+                <p>{timing}</p>
               </>
             )}
           </div>

@@ -126,7 +126,6 @@ fn expand_zip(
             "Import interrupted; reselect saved files to resume"
         );
         if let Ok(mut job) = control.job.try_lock() {
-            job.progress.label = format!("Extracting ZIP entry {} of {}", i + 1, archive.len());
             job.progress.unit = "files".into();
             job.progress.received = 0;
             job.progress.expected = None;
@@ -430,6 +429,14 @@ impl crate::Engine {
                 file.path
             );
             let files = if crate::warc_import::recognized(&file.path) {
+                record
+                    .progress(
+                        format!("Reading WARC: {}", file.path),
+                        0,
+                        Some(file.size),
+                        "bytes",
+                    )
+                    .await;
                 let output = record.dir.join("expanded").join(web::key(&file.path));
                 let file_cap = job.config.max_resource_mb * 1024 * 1024;
                 let control = record.clone();
@@ -442,6 +449,9 @@ impl crate::Engine {
                 warc_budget_used += expanded.budget_used;
                 expanded.payloads
             } else if extension(&file.path) == "zip" {
+                record
+                    .progress(format!("Extracting ZIP: {}", file.path), 0, None, "files")
+                    .await;
                 let output = record.dir.join("expanded").join(web::key(&file.path));
                 let file_cap = job.config.max_resource_mb * 1024 * 1024;
                 let control = record.clone();
@@ -485,7 +495,7 @@ impl crate::Engine {
             );
             record
                 .progress(
-                    format!("Preparing {}", payload.path),
+                    "Preparing captured pages and assets",
                     index as u64,
                     Some(payloads.len() as u64),
                     "files",
@@ -645,6 +655,9 @@ impl crate::Engine {
             "No HTML, video, or audio files were found in this import"
         );
         anyhow::ensure!(ordinary_items<=job.config.max_items,"Import contains more pages/media than the item limit; raise the limit or choose fewer files");
+        record
+            .progress("Saving review and cleaning up temporary files", 0, None, "")
+            .await;
         record.change(|job| {
             if job.status != "importing" { return; }
             job.entries=entries; job.resources=resources; job.queue.clear(); job.visited.clear(); job.bytes=total;

@@ -163,6 +163,26 @@ test("progress shows work, transfer bytes, cooldowns and errors with readable lo
   job.phase = "package";
   job.progress = {
     ...job.progress,
+    label: "Writing files to the ZIM",
+    completed: 1,
+    total: 8,
+    unit: "files",
+    received: 0,
+    expected: null,
+  };
+  await expect(progress).toContainText("1 of 8 files · 12%");
+  for (const count of [2, 3, 4]) {
+    job.progress.completed = count;
+    await expect(progress).toContainText(`${count} of 8 files`);
+  }
+  await expect(progress).toContainText(/About .* left in this step/);
+  job.progress.completed = 8;
+  await expect(progress).toContainText("Finishing this step");
+  await expect(progress.getByRole("progressbar")).not.toHaveAttribute(
+    "aria-valuenow",
+  );
+  job.progress = {
+    ...job.progress,
     label: "Finalizing the ZIM directory and checksum",
     completed: 8,
     total: null,
@@ -176,4 +196,98 @@ test("progress shows work, transfer bytes, cooldowns and errors with readable lo
   await expect(progress.getByRole("progressbar")).not.toHaveAttribute(
     "aria-valuenow",
   );
+  await expect(progress).toContainText("No time estimate yet");
+  job.progress = {
+    ...job.progress,
+    label: "Verifying finished ZIM checksum",
+    completed: 100 * 1024 ** 2,
+    total: 200 * 1024 ** 2,
+    unit: "bytes",
+  };
+  await expect(progress).toContainText("100.0 MB of 200.0 MB · 50%");
+});
+
+test("saved-file progress switches from copying to WARC reading and preparation", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.addInitScript(() => {
+    const job = {
+      id: "warc-progress",
+      status: "importing",
+      progress: {
+        label: "Reading WARC: capture.warc.gz",
+        completed: 256 * 1024,
+        total: 1024 * 1024,
+        unit: "bytes",
+      },
+    };
+    Object.assign(window, {
+      isTauri: true,
+      importProgressFixture: job.progress,
+      __TAURI_INTERNALS__: {
+        invoke: async (command: string, args: { offset: number }) => {
+          switch (command) {
+            case "capabilities":
+              return {
+                platform: "ios",
+                version: "test",
+                yt_dlp: {},
+                zimwriterfs: {},
+              };
+            case "get_settings":
+              return { archive_template: "atlas" };
+            case "list_jobs":
+            case "archive_templates":
+            case "get_shared_links":
+              return [];
+            case "begin_import":
+            case "get_job":
+              return job;
+            case "import_offset":
+              return 0;
+            case "import_chunk":
+              return args.offset + 256 * 1024;
+            case "finish_import":
+              return new Promise(() => {});
+          }
+          throw new Error(`Unexpected command: ${command}`);
+        },
+      },
+    });
+  });
+  await page.goto("/");
+  await page
+    .getByText("Import saved content or a URL list", { exact: true })
+    .click();
+  await page.getByLabel("Choose saved files", { exact: true }).setInputFiles({
+    name: "capture.warc.gz",
+    mimeType: "application/gzip",
+    buffer: Buffer.alloc(1024 * 1024),
+  });
+  await page.getByRole("button", { name: "Import & review" }).click();
+  const reading = page.getByRole("progressbar", {
+    name: "Reading WARC: capture.warc.gz",
+  });
+  await expect(reading).toHaveAttribute("value", "262144");
+  await expect(page.locator(".import-progress")).toContainText(
+    "0.3 MB of 1.0 MB",
+  );
+  await page.evaluate(() => {
+    Object.assign(Reflect.get(window, "importProgressFixture"), {
+      label: "Preparing captured pages and assets",
+      completed: 10,
+      total: 100,
+      unit: "files",
+    });
+  });
+  await expect(
+    page.getByRole("progressbar", {
+      name: "Preparing captured pages and assets",
+    }),
+  ).toHaveAttribute("value", "10");
+  await expect(page.locator(".import-progress")).toContainText(
+    "10 of 100 files",
+  );
+  await expect(reading).toHaveCount(0);
 });

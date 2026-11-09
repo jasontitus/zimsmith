@@ -998,8 +998,33 @@ export class BrowserEngine {
       "info",
       "Preparing offline pages, linked assets, contents, and search. Downloaded files are reused.",
     );
-    for (const entry of job.entries.filter((e) => e.selected)) {
+    const selected = job.entries.filter((entry) => entry.selected);
+    const updateProgress = async (
+      label: string,
+      completed: number,
+      total: number | null,
+      unit: string,
+    ) => {
+      job.progress = {
+        label,
+        completed,
+        total,
+        unit,
+        received: 0,
+        expected: null,
+        updated_at: now(),
+      };
+      job.updated_at = now();
+      await this.save(job, false);
+    };
+    for (const [index, entry] of selected.entries()) {
       net.check();
+      await updateProgress(
+        "Preparing offline pages and assets",
+        index,
+        selected.length,
+        "items",
+      );
       if (!entry.file)
         throw new Error(
           "A selected item is missing its saved file. Resume downloading first.",
@@ -1029,6 +1054,12 @@ export class BrowserEngine {
           entry.title,
         );
     }
+    await updateProgress(
+      "Creating the capture report and contents",
+      0,
+      null,
+      "",
+    );
     const report = await captureReport(job, dir, paths);
     job.capture_report = report.summary;
     add("capture-report.html", "text/html", report.html, "Capture report");
@@ -1091,39 +1122,39 @@ export class BrowserEngine {
         file,
         [...items.values()],
         () => net.check(),
-        async (done, total) => {
-          job.progress = {
-            label:
-              done === total
-                ? "Verifying ZIM checksum"
-                : "Writing ZIM in browser storage",
-            completed: done,
-            total,
-            unit: "files",
-            received: 0,
-            expected: null,
-            updated_at: now(),
-          };
-          job.updated_at = now();
-          await this.save(job, false);
-        },
+        (done, total, step) =>
+          step === "checksum"
+            ? updateProgress(
+                "Calculating the ZIM checksum",
+                done,
+                total,
+                "bytes",
+              )
+            : updateProgress(
+                "Writing ZIM in browser storage",
+                done,
+                total,
+                "files",
+              ),
         mainPath,
       );
       job.validation = await verifyZim(
         file,
         () => net.check(),
-        async (done, total) => {
-          job.progress = {
-            label: "Verifying finished ZIM checksum and directory",
-            completed: done,
-            total,
-            unit: "bytes",
-            received: 0,
-            expected: null,
-            updated_at: now(),
-          };
-          await this.save(job, false);
-        },
+        (done, total, step) =>
+          step === "checksum"
+            ? updateProgress(
+                "Verifying finished ZIM checksum",
+                done,
+                total,
+                "bytes",
+              )
+            : updateProgress(
+                "Checking the ZIM directory",
+                done,
+                total,
+                "entries",
+              ),
         mainPath,
       );
     } finally {
