@@ -71,6 +71,12 @@ async fn warc_and_multimember_gzip_import_original_urls_assets_and_chunked_http_
                 "image/svg+xml",
                 b"<svg xmlns='http://www.w3.org/2000/svg'/>",
             ),
+            record(
+                "resource",
+                "https://capture.invalid/unlinked",
+                "text/plain",
+                b"Captured standalone asset",
+            ),
         ];
         let bytes: Vec<u8> = records
             .iter()
@@ -91,7 +97,7 @@ async fn warc_and_multimember_gzip_import_original_urls_assets_and_chunked_http_
         let job = engine.finish_import(&id).await.unwrap();
         assert_eq!(job.status, "review");
         assert_eq!(job.entries.len(), 2);
-        assert_eq!(job.resources.len(), 2);
+        assert_eq!(job.resources.len(), 3);
         assert_eq!(job.requests, 0);
         assert_eq!(
             job.resources["https://capture.invalid/style"].mime,
@@ -132,6 +138,11 @@ async fn warc_and_multimember_gzip_import_original_urls_assets_and_chunked_http_
         let saved = archive.get_text(&format!("{home}.html")).unwrap();
         assert!(saved.contains(&format!("{other}.html")));
         assert!(saved.contains(&job.resources["https://capture.invalid/image"].path));
+        let unlinked = &job.resources["https://capture.invalid/unlinked"].path;
+        assert_eq!(
+            archive.get_text(unlinked).unwrap(),
+            "Captured standalone asset"
+        );
     }
 }
 
@@ -339,7 +350,7 @@ async fn multiple_warcs_share_expansion_budget_even_for_ignored_metadata() {
 }
 
 #[tokio::test]
-async fn warc_skips_bad_http_headers_and_keeps_assets_after_the_review_limit() {
+async fn warc_keeps_all_usable_pages_and_assets_despite_the_crawl_item_limit() {
     let partial = record(
         "resource",
         "https://capture.invalid/partial",
@@ -359,7 +370,7 @@ async fn warc_skips_bad_http_headers_and_keeps_assets_after_the_review_limit() {
         "response",
         "https://capture.invalid/keep",
         "application/http",
-        b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: default-src 'none';\r\n\timg-src 'self'\r\nX-Captured-Header: \xff\r\n\r\n<title>Keep</title><img src='/image'>",
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/html, charset=utf-8\r\nContent-Security-Policy: default-src 'none';\r\n\timg-src 'self'\r\nX-Captured-Header: \xff\r\n\r\n<title>Keep</title><img src='/image'>",
     ));
     bytes.extend(record(
         "resource",
@@ -393,17 +404,17 @@ async fn warc_skips_bad_http_headers_and_keeps_assets_after_the_review_limit() {
     engine.import_chunk(&job.id, name, 0, &bytes).await.unwrap();
     let review = engine.finish_import(&job.id).await.unwrap();
     assert_eq!(review.status, "review");
-    assert_eq!(review.entries.len(), 1);
-    assert_eq!(review.entries[0].title, "Keep");
+    assert_eq!(review.entries.len(), 2);
+    assert!(review.entries.iter().any(|entry| entry.title == "Keep"));
+    assert!(review.import.as_ref().unwrap().whole_warc);
+    let summary = review.clone().list_view();
+    assert_eq!(summary.entry_count, Some(2));
+    assert!(summary.entries.is_empty());
     assert!(review
         .resources
         .contains_key("https://capture.invalid/image"));
     assert_eq!(review.requests, 0);
-    for warning in [
-        "invalid captured HTTP headers",
-        "beyond the 1-item review limit",
-        "redirect, error, partial",
-    ] {
+    for warning in ["invalid captured HTTP headers", "redirect, error, partial"] {
         assert!(review.logs.iter().any(|log| log.message.contains(warning)));
     }
 }

@@ -129,6 +129,14 @@ fn canonical_start_redirect(source: &Url, target: &Url) -> bool {
         && source.path().trim_end_matches('/') == target.path().trim_end_matches('/')
 }
 
+pub(crate) fn normalized_mime(value: &str) -> Option<String> {
+    // Some captured servers use a comma in place of the parameter separator.
+    let essence = value.split([';', ',']).next()?.trim();
+    essence
+        .parse::<mime_guess::Mime>()
+        .ok()
+        .map(|mime| mime.essence_str().to_owned())
+}
 pub fn key(url: &str) -> String {
     format!("{:x}", Sha256::digest(url.as_bytes()))[..24].into()
 }
@@ -1390,6 +1398,9 @@ fn needed_resources(job: &Job) -> std::collections::BTreeSet<String> {
         .filter(|e| e.selected)
         .flat_map(|e| e.assets.clone())
         .collect();
+    if job.include_all_warc_assets() {
+        todo.extend(job.resources.keys().cloned());
+    }
     while let Some(url) = todo.pop() {
         if !needed.insert(url.clone()) {
             continue;

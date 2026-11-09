@@ -244,6 +244,7 @@ impl Engine {
             visited: vec![],
             resources: Default::default(),
             asset_summary: None,
+            entry_count: None,
             refresh: None,
             import: None,
             capture_report: None,
@@ -495,11 +496,15 @@ impl Engine {
                 "Finish scanning before confirming the download"
             );
             anyhow::ensure!(!selected.is_empty(), "Select at least one item");
+            let selected: std::collections::BTreeSet<_> = selected.into_iter().collect();
+            let available = job
+                .entries
+                .iter()
+                .filter(|e| e.state != "scan_failed")
+                .map(|e| &e.id)
+                .collect::<std::collections::BTreeSet<_>>();
             anyhow::ensure!(
-                selected.iter().all(|id| job
-                    .entries
-                    .iter()
-                    .any(|e| &e.id == id && e.state != "scan_failed")),
+                selected.iter().all(|id| available.contains(id)),
                 "Selection contains an unavailable item"
             );
             for entry in &mut job.entries {
@@ -521,7 +526,15 @@ impl Engine {
             job.error = None;
             job.log(
                 "info",
-                format!("Confirmed {} items. Beginning download.", selected.len()),
+                format!(
+                    "Confirmed {} items. {}",
+                    selected.len(),
+                    if imported {
+                        "Building from saved files."
+                    } else {
+                        "Beginning download."
+                    }
+                ),
             );
             record.save(&job).await?;
         }

@@ -79,7 +79,12 @@ async fn capabilities(engine: State<'_, Engine>) -> Result<zim_engine::Capabilit
 }
 #[tauri::command]
 async fn list_jobs(engine: State<'_, Engine>) -> Result<Vec<Job>, String> {
-    Ok(engine.list().await.into_iter().map(Job::view).collect())
+    Ok(engine
+        .list()
+        .await
+        .into_iter()
+        .map(Job::list_view)
+        .collect())
 }
 #[tauri::command]
 async fn create_job(engine: State<'_, Engine>, config: NewJob) -> Result<Job, String> {

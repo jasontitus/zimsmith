@@ -2,7 +2,7 @@
 use crate::{imports::Payload, web, Record};
 use anyhow::{Context, Result};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     io::{self, BufRead, BufReader, Read, Write},
     path::Path,
     sync::{atomic::Ordering, Arc},
@@ -160,7 +160,6 @@ impl<R: BufRead> Read for Chunked<R> {
 pub(crate) struct Expansion {
     pub payloads: Vec<Payload>,
     pub budget_used: u64,
-    pub items: usize,
 }
 
 pub(crate) fn expand(
@@ -169,7 +168,6 @@ pub(crate) fn expand(
     output: &Path,
     cap: u64,
     file_cap: u64,
-    item_limit: usize,
     control: Arc<Record>,
 ) -> Result<Expansion> {
     let input = std::fs::File::open(file)?;
@@ -189,8 +187,6 @@ pub(crate) fn expand(
     let mut total = 0u64;
     let mut count = 0usize;
     let mut skipped = 0usize;
-    let mut item_urls = BTreeSet::new();
-    let mut over_item_limit = 0usize;
     let mut invalid = 0usize;
     let mut first_invalid_header = None;
     std::fs::create_dir_all(output)?;
@@ -238,10 +234,15 @@ pub(crate) fn expand(
             declared <= file_cap + HEADER_LIMIT as u64,
             "WARC record exceeds the per-file limit"
         );
+        let initial_type = if kind == RecordType::Response {
+            WarcHeader::IdentifiedPayloadType
+        } else {
+            WarcHeader::ContentType
+        };
         let mut mime = record
-            .header(WarcHeader::ContentType)
-            .map(|s| s.into_owned())
-            .unwrap_or_else(|| "application/octet-stream".into());
+            .header(initial_type)
+            .as_deref()
+            .and_then(web::normalized_mime);
         let mut encoding = String::new();
         let mut chunked = false;
         if kind == RecordType::Response {
@@ -303,7 +304,9 @@ pub(crate) fn expand(
                     );
                 }
                 if h.name.eq_ignore_ascii_case("content-type") {
-                    mime = value.to_string();
+                    if let Some(content_type) = web::normalized_mime(value) {
+                        mime = Some(content_type);
+                    }
                 }
                 if h.name.eq_ignore_ascii_case("content-encoding") {
                     encoding = value.to_ascii_lowercase();
@@ -326,19 +329,11 @@ pub(crate) fn expand(
                 }
             }
         }
-        mime = mime
-            .split(';')
-            .next()
-            .unwrap_or("")
-            .trim()
-            .to_ascii_lowercase();
-        let is_item = matches!(mime.as_str(), "text/html" | "application/xhtml+xml")
-            || mime.starts_with("audio/")
-            || mime.starts_with("video/");
-        if is_item && item_urls.len() >= item_limit && !item_urls.contains(&url) {
-            over_item_limit += 1;
-            continue;
-        }
+        let mime = mime.unwrap_or_else(|| "application/octet-stream".into());
+        anyhow::ensure!(
+            payloads.contains_key(&url) || payloads.len() < crate::imports::MAX_FILES,
+            "WARC exceeds the 50,000 unique capture limit"
+        );
         let key = web::key(&url);
         let path = format!("warc-{key}");
         let file = output.join(&path);
@@ -383,12 +378,8 @@ pub(crate) fn expand(
             raw.read(&mut [0])? == 0,
             "Extra data after decoded HTTP body"
         );
-        dest.sync_all()?;
-        if is_item {
-            item_urls.insert(url.clone());
-        } else {
-            item_urls.remove(&url);
-        }
+        // Staging is rebuilt after interruption. Avoid a disk sync for every record.
+        drop(dest);
         payloads.insert(
             url.clone(),
             Payload {
@@ -410,15 +401,11 @@ pub(crate) fn expand(
                 .unwrap_or_default();
             job.log("warning", format!("WARC import omitted {invalid} records with invalid captured HTTP headers or target URLs.{detail}"));
         }
-        if over_item_limit > 0 {
-            job.log("warning", format!("WARC import omitted {over_item_limit} page or media records beyond the {item_limit}-item review limit."));
-        }
     }
     drop(records);
     drop(reader);
     Ok(Expansion {
         payloads: payloads.into_values().collect(),
         budget_used: (cap - limited.left).max(total),
-        items: item_urls.len(),
     })
 }

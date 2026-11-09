@@ -266,6 +266,8 @@ pub struct Job {
     pub created_at: u64,
     pub updated_at: u64,
     pub entries: Vec<Entry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_count: Option<usize>,
     pub queue: Vec<PendingPage>,
     pub visited: Vec<String>,
     pub resources: BTreeMap<String, Resource>,
@@ -410,6 +412,17 @@ impl Job {
                         entry.selected && entry.state == "pending" && entry.error.is_none()
                     })
             })
+    }
+    pub(crate) fn include_all_warc_assets(&self) -> bool {
+        self.import.as_ref().is_some_and(|import| import.whole_warc)
+            && self.entries.iter().all(|entry| entry.selected)
+    }
+    pub fn list_view(mut self) -> Self {
+        if self.import.as_ref().is_some_and(|import| import.whole_warc) {
+            self.entry_count = Some(self.entries.len());
+            self.entries.clear();
+        }
+        self.view()
     }
     pub fn view(mut self) -> Self {
         self.asset_summary = Some(AssetSummary {

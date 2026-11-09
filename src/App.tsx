@@ -142,6 +142,7 @@ export default function App() {
   const [toast, setToast] = useState("");
   const [selection, setSelection] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState("");
+  const [collectionPage, setCollectionPage] = useState(0);
   const [confirm, setConfirm] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -193,6 +194,19 @@ export default function App() {
         setSettingsDraft(saved);
       }
       if (selectedJob && !deletedJobs.current.has(selectedJob)) {
+        const summary = list.find((item) => item.id === selectedJob);
+        if (
+          summary?.entry_count !== undefined &&
+          lastJob.current === selectedJob &&
+          lastStatus.current === summary.status
+        ) {
+          setJob((previous) =>
+            previous?.id === selectedJob
+              ? { ...summary, entries: previous.entries }
+              : previous,
+          );
+          return;
+        }
         const detail = await api.get(selectedJob);
         if (deletedJobs.current.has(selectedJob)) return;
         setJob(detail);
@@ -274,6 +288,7 @@ export default function App() {
     );
     setTab("job");
     setFilter("");
+    setCollectionPage(0);
     setError("");
   };
   const editCrawl = (item: Job) => {
@@ -390,6 +405,18 @@ export default function App() {
   );
   const selectedEntries = job?.entries.filter((e) => selection.has(e.id)) || [];
   const knownSize = selectedEntries.reduce((sum, e) => sum + (e.size || 0), 0);
+  const filterText = filter.toLowerCase();
+  const matchingEntries = (job?.entries || []).filter((entry) =>
+    `${entry.title} ${entry.url}`.toLowerCase().includes(filterText),
+  );
+  const pageSize = 100;
+  const pageCount = Math.ceil(matchingEntries.length / pageSize);
+  const currentPage = Math.max(0, Math.min(collectionPage, pageCount - 1));
+  const visibleEntries = matchingEntries.slice(
+    currentPage * pageSize,
+    (currentPage + 1) * pageSize,
+  );
+
   const running = jobs.filter((j) => activeStates.includes(j.status)).length;
   const totalOffline = jobs.filter((j) => j.status === "completed").length;
 
@@ -1144,7 +1171,10 @@ export default function App() {
                 <Stat
                   title="Items discovered"
                   value={jobs
-                    .reduce((s, j) => s + j.entries.length, 0)
+                    .reduce(
+                      (s, j) => s + (j.entry_count ?? j.entries.length),
+                      0,
+                    )
                     .toString()}
                   icon={<FileText size={20} />}
                 />
@@ -1788,7 +1818,10 @@ export default function App() {
                       aria-label="Filter collection"
                       placeholder="Find an item…"
                       value={filter}
-                      onChange={(e) => setFilter(e.target.value)}
+                      onChange={(e) => {
+                        setFilter(e.target.value);
+                        setCollectionPage(0);
+                      }}
                     />
                   </div>
                 </div>
@@ -1804,31 +1837,49 @@ export default function App() {
                     className="collection-items"
                     aria-label="Collection items"
                   >
-                    {job.entries
-                      .filter((e) =>
-                        `${e.title} ${e.url}`
-                          .toLowerCase()
-                          .includes(filter.toLowerCase()),
-                      )
-                      .map((entry) => (
-                        <EntryRow
-                          key={entry.id}
-                          entry={entry}
-                          media={job.config.kind === "media"}
-                          selected={selection.has(entry.id)}
-                          editable={["review", "failed"].includes(job.status)}
-                          onToggle={() =>
-                            setSelection((previous) => {
-                              const next = new Set(previous);
-                              next.has(entry.id)
-                                ? next.delete(entry.id)
-                                : next.add(entry.id);
-                              return next;
-                            })
-                          }
-                        />
-                      ))}
+                    {visibleEntries.map((entry) => (
+                      <EntryRow
+                        key={entry.id}
+                        entry={entry}
+                        media={job.config.kind === "media"}
+                        selected={selection.has(entry.id)}
+                        editable={["review", "failed"].includes(job.status)}
+                        onToggle={() =>
+                          setSelection((previous) => {
+                            const next = new Set(previous);
+                            next.has(entry.id)
+                              ? next.delete(entry.id)
+                              : next.add(entry.id);
+                            return next;
+                          })
+                        }
+                      />
+                    ))}
                   </ul>
+                  {pageCount > 1 && (
+                    <div
+                      className="table-toolbar"
+                      aria-label="Collection pages"
+                    >
+                      <button
+                        className="button secondary"
+                        disabled={currentPage === 0}
+                        onClick={() => setCollectionPage(currentPage - 1)}
+                      >
+                        Previous
+                      </button>
+                      <span aria-live="polite">
+                        Page {currentPage + 1} of {pageCount}
+                      </span>
+                      <button
+                        className="button secondary"
+                        disabled={currentPage + 1 >= pageCount}
+                        onClick={() => setCollectionPage(currentPage + 1)}
+                      >
+                        Next
+                      </button>
+                    </div>
+                  )}
                   {job.entries.length === 0 && (
                     <div className="empty-large">
                       <LoaderCircle className="spin" size={28} />
@@ -2259,8 +2310,9 @@ export default function App() {
             <div className="eyebrow">YOUR COLLECTION, YOUR CALL</div>
             <h2 id="confirm-title">Ready to take it offline?</h2>
             <p>
-              We’ll download your selection, build the search index and
-              contents, and package everything into a ZIM file on this device.
+              {job.import
+                ? "We’ll build the search index and ZIM from your saved files on this device."
+                : "We’ll download your selection, build the search index and contents, and package everything into a ZIM file on this device."}
             </p>
             <dl>
               <div>
@@ -2271,19 +2323,25 @@ export default function App() {
                 <dt>Known source size</dt>
                 <dd>{bytes(knownSize)}</dd>
               </div>
-              <div>
-                <dt>Maximum per file</dt>
-                <dd>{job.config.max_resource_mb} MB</dd>
-              </div>
-              <div>
-                <dt>Page request delay</dt>
-                <dd>{job.config.delay_ms / 1000} seconds</dd>
-              </div>
+              {!job.import && (
+                <>
+                  <div>
+                    <dt>Maximum per file</dt>
+                    <dd>{job.config.max_resource_mb} MB</dd>
+                  </div>
+                  <div>
+                    <dt>Page request delay</dt>
+                    <dd>{job.config.delay_ms / 1000} seconds</dd>
+                  </div>
+                </>
+              )}
             </dl>
-            <div className="alert info">
-              This is not a total download estimate. Assets and media with
-              unknown sizes add to it. You can pause and resume at any time.
-            </div>
+            {!job.import && (
+              <div className="alert info">
+                This is not a total download estimate. Assets and media with
+                unknown sizes add to it. You can pause and resume at any time.
+              </div>
+            )}
             <div className="modal-actions">
               <button
                 className="button secondary"
@@ -2306,7 +2364,7 @@ export default function App() {
                 ) : (
                   <ArrowDownToLine size={17} />
                 )}
-                Download & build ZIM
+                {job.import ? "Build ZIM" : "Download & build ZIM"}
               </button>
             </div>
           </section>
@@ -2440,7 +2498,7 @@ function JobRow({
         <div className="job-row-title">
           <strong>{item.config.title}</strong>
           <small>
-            {item.entries.length} items ·{" "}
+            {item.entry_count ?? item.entries.length} items ·{" "}
             {new Date(item.created_at * 1000).toLocaleDateString(undefined, {
               month: "short",
               day: "numeric",

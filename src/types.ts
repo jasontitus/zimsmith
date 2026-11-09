@@ -100,6 +100,7 @@ export interface Job {
   created_at: number;
   updated_at: number;
   entries: Entry[];
+  entry_count?: number;
   logs: { time: number; level: string; message: string }[];
   error: string | null;
   output: string | null;

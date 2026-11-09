@@ -8,7 +8,7 @@ use std::{
     path::Path,
 };
 use tokio::io::AsyncWriteExt;
-const MAX_FILES: usize = 50_000;
+pub(crate) const MAX_FILES: usize = 50_000;
 const MAX_TOTAL: u64 = 20 * 1024 * 1024 * 1024;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImportFile {
@@ -21,6 +21,8 @@ pub struct ImportState {
     pub finished: bool,
     #[serde(default)]
     pub file_count: usize,
+    #[serde(default)]
+    pub whole_warc: bool,
 }
 #[derive(Clone)]
 pub(crate) struct Payload {
@@ -244,6 +246,7 @@ impl crate::Engine {
                     file_count: files.len(),
                     files,
                     finished: false,
+                    whole_warc: false,
                 });
                 j.log(
                     "info",
@@ -415,7 +418,10 @@ impl crate::Engine {
             .unwrap_or(MAX_TOTAL)
             .min(MAX_TOTAL);
         let mut warc_budget_used = 0u64;
-        let mut warc_items = 0usize;
+        let whole_warc = import
+            .files
+            .iter()
+            .all(|f| crate::warc_import::recognized(&f.path));
         for file in &import.files {
             let path = record.dir.join("uploads").join(web::key(&file.path));
             anyhow::ensure!(
@@ -429,15 +435,11 @@ impl crate::Engine {
                 let control = record.clone();
                 let gzip = file.path.to_ascii_lowercase().ends_with(".gz");
                 let remaining = cap.saturating_sub(warc_budget_used);
-                let item_limit = job.config.max_items.saturating_sub(warc_items);
                 let expanded = tokio::task::spawn_blocking(move || {
-                    crate::warc_import::expand(
-                        &path, gzip, &output, remaining, file_cap, item_limit, control,
-                    )
+                    crate::warc_import::expand(&path, gzip, &output, remaining, file_cap, control)
                 })
                 .await??;
                 warc_budget_used += expanded.budget_used;
-                warc_items += expanded.items;
                 expanded.payloads
             } else if extension(&file.path) == "zip" {
                 let output = record.dir.join("expanded").join(web::key(&file.path));
@@ -473,6 +475,7 @@ impl crate::Engine {
             }
         }
         let mut entries = Vec::new();
+        let mut ordinary_items = 0usize;
         let mut resources = BTreeMap::new();
         tokio::fs::create_dir_all(record.dir.join("media")).await?;
         for (index, payload) in payloads.iter().enumerate() {
@@ -505,15 +508,28 @@ impl crate::Engine {
                     "Imported HTML exceeds the 8 MB parsing limit: {}",
                     payload.path
                 );
-                let html =
-                    String::from_utf8_lossy(&tokio::fs::read(&payload.file).await?).into_owned();
+                let bytes = tokio::fs::read(&payload.file).await?;
+                let html = String::from_utf8_lossy(&bytes);
                 let data = web::inspect(&html, &url);
-                tokio::fs::write(record.dir.join("cache").join(format!("{id}.html")), html).await?;
+                let cache = record.dir.join("cache").join(format!("{id}.html"));
+                // Large WARC imports can share their already-decoded UTF-8
+                // bodies with the cache instead of copying them a second time.
+                let linked =
+                    if payload.url.is_some() && matches!(html, std::borrow::Cow::Borrowed(_)) {
+                        let _ = tokio::fs::remove_file(&cache).await;
+                        tokio::fs::hard_link(&payload.file, &cache).await.is_ok()
+                    } else {
+                        false
+                    };
+                if !linked {
+                    tokio::fs::write(&cache, html.as_bytes()).await?;
+                }
                 tokio::fs::write(
                     record.dir.join("cache").join(format!("{id}.url")),
                     url.as_str(),
                 )
                 .await?;
+                ordinary_items += usize::from(payload.url.is_none());
                 entries.push(Entry {
                     id,
                     url: url.to_string(),
@@ -524,7 +540,13 @@ impl crate::Engine {
                     size: Some(payload.size),
                     duration: None,
                     error: None,
-                    text: data.text,
+                    // Re-read saved HTML during packaging to keep large WARC
+                    // checkpoints and review requests small.
+                    text: if payload.url.is_some() {
+                        data.text.chars().take(256).collect()
+                    } else {
+                        data.text
+                    },
                     assets: data.assets,
                     media_file: None,
                     media_audio: None,
@@ -566,6 +588,7 @@ impl crate::Engine {
                     {
                         tokio::fs::copy(&cache_path, &media_path).await?;
                     }
+                    ordinary_items += usize::from(payload.url.is_none());
                     entries.push(Entry {
                         id: id.clone(),
                         url: url.to_string(),
@@ -621,11 +644,11 @@ impl crate::Engine {
             !entries.is_empty(),
             "No HTML, video, or audio files were found in this import"
         );
-        anyhow::ensure!(entries.len()<=job.config.max_items,"Import contains more pages/media than the item limit; raise the limit or choose fewer files");
+        anyhow::ensure!(ordinary_items<=job.config.max_items,"Import contains more pages/media than the item limit; raise the limit or choose fewer files");
         record.change(|job| {
             if job.status != "importing" { return; }
             job.entries=entries; job.resources=resources; job.queue.clear(); job.visited.clear(); job.bytes=total;
-            let import=job.import.as_mut().unwrap(); import.finished=true; import.file_count=import.files.len(); import.files.clear(); job.phase="scan".into(); job.status="review".into(); job.error=None;
+            let import=job.import.as_mut().unwrap(); import.finished=true; import.whole_warc=whole_warc; import.file_count=import.files.len(); import.files.clear(); job.phase="scan".into(); job.status="review".into(); job.error=None;
             let count=job.entries.len();
             job.log("info",format!("Imported {count} items. Review your selection before building. External resources will be reported as missing, never fetched."));
         }).await?;

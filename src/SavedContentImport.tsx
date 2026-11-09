@@ -3,7 +3,6 @@ import { Archive, FolderOpen, Upload, X } from "lucide-react";
 import { api, native, savedImports } from "./api";
 import { normalizedCapture } from "./capture";
 import { normalizeSourceUrl } from "./source";
-import { NumberInput } from "./NumberInput";
 import type { Config, Job } from "./types";
 
 const size = (n: number) =>
@@ -35,7 +34,6 @@ export function SavedContentImport({
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
   const [received, setReceived] = useState(0);
-  const [warcLimit, setWarcLimit] = useState<number | null>(null);
   const active = useRef(false);
   const stop = useRef(false),
     attempt = useRef<string | null>(null);
@@ -66,7 +64,6 @@ export function SavedContentImport({
   const total = files.reduce((sum, file) => sum + file.size, 0);
   const nativeWarc =
     native && files.some((file) => /\.warc(?:\.gz)?$/i.test(file.name));
-  const itemLimit = warcLimit ?? config.max_items;
   const path = (file: File) => file.webkitRelativePath || file.name;
   const choose = async (selected: File[]) => {
     setError("");
@@ -136,15 +133,9 @@ export function SavedContentImport({
         throw new Error(
           "Choose saved files, a folder, a ZIP, or a WARC first.",
         );
-      if (
-        nativeWarc &&
-        (!Number.isInteger(itemLimit) || itemLimit < 1 || itemLimit > 5000)
-      )
-        throw new Error("Choose a WARC review limit from 1 to 5,000.");
       const job = await savedImports.begin(
         {
           ...config,
-          max_items: nativeWarc ? itemLimit : config.max_items,
           title: title.trim(),
           url: "https://local-import.invalid/",
           kind: "website",
@@ -320,22 +311,11 @@ export function SavedContentImport({
               </div>
             )}
             {nativeWarc && (
-              <>
-                <label htmlFor="warc-item-limit">WARC review limit</label>
-                <NumberInput
-                  id="warc-item-limit"
-                  min={1}
-                  max={5000}
-                  value={itemLimit}
-                  onValueChange={setWarcLimit}
-                  disabled={busy}
-                />
-                <p className="settings-note">
-                  Keep the first pages or media up to this limit. Zimsmith scans
-                  the rest of the file for captured assets and reports omitted
-                  records.
-                </p>
-              </>
+              <p className="settings-note">
+                Zimsmith keeps every usable capture in the WARC for review.
+                Large files can take several minutes and need extra space while
+                building.
+              </p>
             )}
           </>
         ) : (

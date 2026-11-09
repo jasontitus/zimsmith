@@ -77,25 +77,31 @@ pub async fn package(record: &Record) -> Result<()> {
         }
     }
     let mut needed = BTreeSet::new();
-    let mut todo: Vec<_> = selected.iter().flat_map(|e| e.assets.clone()).collect();
+    let mut todo: Vec<_> = selected
+        .iter()
+        .flat_map(|e| e.assets.iter().map(String::as_str))
+        .collect();
+    if job.include_all_warc_assets() {
+        todo.extend(job.resources.keys().map(String::as_str));
+    }
     if job.config.include_assets {
         while let Some(url) = todo.pop() {
-            if !needed.insert(url.clone()) {
+            if !needed.insert(url) {
                 continue;
             }
-            if let Some(resource) = job.resources.get(&url).filter(|r| r.state == "done") {
-                paths.insert(url, resource.path.clone());
-                todo.extend(resource.dependencies.clone());
+            if let Some(resource) = job.resources.get(url).filter(|r| r.state == "done") {
+                paths.insert(url.to_owned(), resource.path.clone());
+                todo.extend(resource.dependencies.iter().map(String::as_str));
             }
         }
     }
-    let omitted: Vec<_> = needed
+    let omitted_count = needed
         .iter()
+        .copied()
         .filter(|url| !job.resources.get(*url).is_some_and(|r| r.state == "done"))
-        .collect();
-    let omitted_count = omitted.len();
-    for url in needed {
-        let Some(resource) = job.resources.get(&url).filter(|r| r.state == "done") else {
+        .count();
+    for &url in &needed {
+        let Some(resource) = job.resources.get(url).filter(|r| r.state == "done") else {
             continue;
         };
         let from = record.dir.join("cache").join(&resource.path);
@@ -108,7 +114,7 @@ pub async fn package(record: &Record) -> Result<()> {
                     .join(format!("{}.url", resource.path)),
             )
             .await
-            .unwrap_or_else(|_| url.clone());
+            .unwrap_or_else(|_| url.to_owned());
             tokio::fs::write(
                 content.join(&resource.path),
                 rewrite_css(&css, &http_url(&base)?, &paths),
@@ -118,10 +124,12 @@ pub async fn package(record: &Record) -> Result<()> {
             tokio::fs::copy(from, content.join(&resource.path)).await?;
         }
     }
+    let local_paths: BTreeSet<_> = paths.values().map(String::as_str).collect();
     let mut catalog = templates::SearchCatalog::default();
     catalog.omitted_assets = omitted_count;
     catalog.capture_report = true;
     let embedded_players = crate::embedded::bindings(&job);
+    let mut simplified_pages = 0usize;
     for (index, entry) in selected.iter().enumerate() {
         record
             .progress(
@@ -170,12 +178,17 @@ pub async fn package(record: &Record) -> Result<()> {
                 )
                 .await
                 .unwrap_or_else(|_| entry.url.clone());
-                rewrite_page(
-                    &crate::embedded::rewrite(&html, &embedded_players)?,
-                    &http_url(&effective)?,
+                let source = http_url(&effective)?;
+                let (page, simplified) = rewrite_captured_page(
+                    &html,
+                    &source,
                     &paths,
+                    &local_paths,
+                    &embedded_players,
                     job.archive_template,
-                )?
+                )?;
+                simplified_pages += usize::from(simplified);
+                page
             }
             SourceKind::Media => {
                 let file = entry
@@ -215,8 +228,17 @@ pub async fn package(record: &Record) -> Result<()> {
         tokio::fs::write(content.join(format!("{}.html", entry.id)), page).await?;
         catalog.add(&catalog_entry, &item_kind);
     }
-    let report =
-        crate::capture_report::write(record, &job, &selected, &catalog, &paths, &content).await?;
+    let report = crate::capture_report::write(
+        record,
+        &job,
+        &selected,
+        &catalog,
+        &paths,
+        &content,
+        &needed,
+        simplified_pages,
+    )
+    .await?;
     let index = templates::render_index(job.archive_template, &job.config, &catalog, false)?;
     tokio::fs::write(content.join("index.html"), index).await?;
     tokio::fs::write(content.join("search.js"), templates::SEARCH_JS).await?;
@@ -282,6 +304,15 @@ pub async fn package(record: &Record) -> Result<()> {
             files.push(file);
         }
     }
+    let titles: BTreeMap<_, _> = selected
+        .iter()
+        .map(|e| (e.id.as_str(), e.title.as_str()))
+        .collect();
+    let resource_mimes: BTreeMap<_, _> = job
+        .resources
+        .values()
+        .map(|r| (r.path.as_str(), r.mime.as_str()))
+        .collect();
     let mut buffer = vec![0u8; 64 * 1024];
     for (index, file) in files.iter().enumerate() {
         let filename = file.file_name().to_string_lossy().into_owned();
@@ -297,26 +328,17 @@ pub async fn package(record: &Record) -> Result<()> {
                 "files",
             )
             .await;
-        let title = selected
-            .iter()
-            .find(|e| filename == format!("{}.html", e.id))
-            .map(|e| e.title.as_str())
+        let title = filename
+            .strip_suffix(".html")
+            .and_then(|id| titles.get(id).copied())
             .unwrap_or(if filename == "index.html" {
                 &job.config.title
             } else {
                 ""
             });
-        let mime = job
-            .resources
-            .values()
-            .find(|r| r.path == filename)
-            .map(|r| {
-                r.mime
-                    .split(';')
-                    .next()
-                    .unwrap_or("application/octet-stream")
-                    .to_string()
-            })
+        let mime = resource_mimes
+            .get(filename.as_str())
+            .and_then(|mime| crate::web::normalized_mime(mime))
             .unwrap_or_else(|| {
                 mime_guess::from_path(&filename)
                     .first_or_octet_stream()
@@ -448,10 +470,71 @@ async fn add_kiwix_indexes(
     Ok(())
 }
 
+// Keep the strict streaming sanitizer. HTML5 normalization can repair
+// malformed input before a second attempt. If that also fails, preserve a
+// safe reading copy under the same archive URL.
+fn rewrite_captured_page(
+    html: &str,
+    source: &url::Url,
+    paths: &BTreeMap<String, String>,
+    local_paths: &BTreeSet<&str>,
+    players: &BTreeMap<String, String>,
+    template: ArchiveTemplate,
+) -> Result<(String, bool)> {
+    let rewrite = |html: &str| {
+        rewrite_page_with_paths(
+            &crate::embedded::rewrite(html, players)?,
+            source,
+            paths,
+            local_paths,
+            template,
+        )
+    };
+    let malformed = |error: &anyhow::Error| {
+        matches!(
+            error.downcast_ref::<lol_html::errors::RewritingError>(),
+            Some(
+                lol_html::errors::RewritingError::ParsingAmbiguity(_)
+                    | lol_html::errors::RewritingError::MemoryLimitExceeded(_)
+            )
+        )
+    };
+    match rewrite(html) {
+        Ok(page) => return Ok((page, false)),
+        Err(error) if malformed(&error) => {}
+        Err(error) => return Err(error),
+    }
+    let document = scraper::Html::parse_document(html);
+    match rewrite(&document.html()) {
+        Ok(page) => Ok((page, false)),
+        Err(error) if malformed(&error) => {
+            let text = crate::web::visible_text(&document);
+            Ok((format!(
+                "<!doctype html><meta charset=utf-8><link rel=stylesheet href=studio.css><title>Saved page</title>{}<main><p>Reading copy of a page with malformed HTML.</p><p>{}</p></main>",
+                templates::render_nav(template, source.as_str()),
+                escape(&text),
+            ), true))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(test)]
 fn rewrite_page(
     html: &str,
     source: &url::Url,
     paths: &BTreeMap<String, String>,
+    template: ArchiveTemplate,
+) -> Result<String> {
+    let local_paths = paths.values().map(String::as_str).collect();
+    rewrite_page_with_paths(html, source, paths, &local_paths, template)
+}
+
+fn rewrite_page_with_paths(
+    html: &str,
+    source: &url::Url,
+    paths: &BTreeMap<String, String>,
+    local_paths: &BTreeSet<&str>,
     template: ArchiveTemplate,
 ) -> Result<String> {
     let html = crate::images::prepare(html)?;
@@ -463,9 +546,6 @@ fn rewrite_page(
         .next()
         .and_then(|e| resolve(source, e.value().attr("href")?))
         .unwrap_or_else(|| source.clone());
-    let local_paths: BTreeSet<_> = paths.values().cloned().collect();
-    let style_paths = paths.clone();
-    let style_base = base.clone();
     let prepared = crate::snapshot::prepare(html, &parsed)?;
     // Allow only our exact preview helper; captured scripts remain disabled.
     let has_previews = prepared.contains("data-zim-poster=");
@@ -501,7 +581,7 @@ fn rewrite_page(
                 let Some(value) = el.get_attribute(attr) else { continue; };
                 let value = decode_attribute(&value);
                 if value.starts_with('#') || (value.starts_with("data:image/") && attr != "href") { continue; }
-                if local_paths.contains(&value) { continue; }
+                if local_paths.contains(value.as_str()) { continue; }
                 let resolved = resolve(&base, &value);
                 if let Some(path) = resolved.as_ref().and_then(|u| paths.get(u.as_str())) {
                     let fragment = base.join(&value).ok().and_then(|u| u.fragment().map(str::to_string)).map(|s| format!("#{s}")).unwrap_or_default();
@@ -511,7 +591,7 @@ fn rewrite_page(
                     else { el.remove_attribute(attr); }
                 } else { el.remove_attribute(attr); }
             }
-            if let Some(style) = el.get_attribute("style") { el.set_attribute("style", &rewrite_css(&decode_attribute(&style), &style_base, &style_paths))?; }
+            if let Some(style) = el.get_attribute("style") { el.set_attribute("style", &rewrite_css(&decode_attribute(&style), &base, paths))?; }
             Ok(())
         }),
         element!("meta[charset]", |el| { el.set_attribute("charset", "utf-8")?; Ok(()) }),
@@ -561,6 +641,25 @@ fn write_icon(path: &std::path::Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn keeps_readable_content_when_strict_html_rewriting_cannot_parse_markup() {
+        let html = "<title>Capture</title><p>Keep this article.</p><select><noframes>legacy</noframes></select><script>alert(1)</script>";
+        let source = http_url("https://example.test/").unwrap();
+        let paths = BTreeMap::new();
+        assert!(crate::embedded::rewrite(html, &paths).is_err());
+        let (page, _) = rewrite_captured_page(
+            html,
+            &source,
+            &paths,
+            &BTreeSet::new(),
+            &paths,
+            ArchiveTemplate::Atlas,
+        )
+        .unwrap();
+        assert!(page.contains("Keep this article."));
+        assert!(!page.contains("<script"));
+    }
+
     #[test]
     fn saved_images_do_not_keep_script_dependent_loading_markers() {
         let paths = BTreeMap::from([("https://example.test/photo.jpg".into(), "photo.jpg".into())]);

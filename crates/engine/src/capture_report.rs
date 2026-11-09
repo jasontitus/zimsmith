@@ -55,48 +55,49 @@ pub async fn write(
     catalog: &SearchCatalog,
     paths: &BTreeMap<String, String>,
     content: &std::path::Path,
+    needed: &BTreeSet<&str>,
+    simplified_pages: usize,
 ) -> Result<Summary> {
-    let mut needed = BTreeSet::new();
-    let mut todo: Vec<_> = selected.iter().flat_map(|e| e.assets.clone()).collect();
-    if job.config.include_assets {
-        while let Some(url) = todo.pop() {
-            if !needed.insert(url.clone()) {
-                continue;
-            }
-            if let Some(r) = job.resources.get(&url).filter(|r| r.state == "done") {
-                todo.extend(r.dependencies.clone());
-            }
-        }
-    }
-    let assets: Vec<_> = needed
-        .iter()
-        .map(|url| Asset {
-            url: label(url),
-            state: job
-                .resources
-                .get(url)
-                .map(|r| {
-                    if r.state == "skipped" && r.error.is_some() {
-                        "skipped_after_failure".into()
-                    } else {
-                        r.state.clone()
-                    }
-                })
-                .unwrap_or_else(|| "missing".into()),
-        })
-        .collect();
+    const OMITTED_DETAIL_LIMIT: usize = 5_000;
+    let mut assets = Vec::new();
     let mut summary = Summary {
         captured_items: selected.len(),
-        saved_assets: assets.iter().filter(|r| r.state == "done").count(),
-        omitted_assets: assets.iter().filter(|r| r.state != "done").count(),
-        excluded_assets: assets.iter().filter(|r| r.state == "excluded").count(),
-        failed_assets: assets
-            .iter()
-            .filter(|r| r.state == "failed" || r.state == "skipped_after_failure")
-            .count(),
         search_limited: catalog.search_limited,
         ..Default::default()
     };
+    for &url in needed {
+        let state = job.resources.get(url).map_or("missing", |r| {
+            if r.state == "skipped" && r.error.is_some() {
+                "skipped_after_failure"
+            } else {
+                r.state.as_str()
+            }
+        });
+        if state == "done" {
+            summary.saved_assets += 1;
+        } else {
+            summary.omitted_assets += 1;
+            summary.excluded_assets += usize::from(state == "excluded");
+            summary.failed_assets +=
+                usize::from(matches!(state, "failed" | "skipped_after_failure"));
+        }
+        if state == "done" || summary.omitted_assets <= OMITTED_DETAIL_LIMIT {
+            assets.push(Asset {
+                url: label(url),
+                state: state.into(),
+            });
+        }
+    }
+    if summary.omitted_assets > OMITTED_DETAIL_LIMIT {
+        summary.warnings.push(format!(
+            "Omitted asset details are limited to {OMITTED_DETAIL_LIMIT} URLs. The total includes every omitted asset."
+        ));
+    }
+    if simplified_pages > 0 {
+        summary.warnings.push(format!(
+            "{simplified_pages} pages with malformed HTML were saved as reading copies."
+        ));
+    }
     let mut online = BTreeSet::new();
     for warning in job
         .logs
