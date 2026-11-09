@@ -415,6 +415,7 @@ impl crate::Engine {
             .unwrap_or(MAX_TOTAL)
             .min(MAX_TOTAL);
         let mut warc_budget_used = 0u64;
+        let mut warc_items = 0usize;
         for file in &import.files {
             let path = record.dir.join("uploads").join(web::key(&file.path));
             anyhow::ensure!(
@@ -428,11 +429,15 @@ impl crate::Engine {
                 let control = record.clone();
                 let gzip = file.path.to_ascii_lowercase().ends_with(".gz");
                 let remaining = cap.saturating_sub(warc_budget_used);
+                let item_limit = job.config.max_items.saturating_sub(warc_items);
                 let expanded = tokio::task::spawn_blocking(move || {
-                    crate::warc_import::expand(&path, gzip, &output, remaining, file_cap, control)
+                    crate::warc_import::expand(
+                        &path, gzip, &output, remaining, file_cap, item_limit, control,
+                    )
                 })
                 .await??;
                 warc_budget_used += expanded.budget_used;
+                warc_items += expanded.items;
                 expanded.payloads
             } else if extension(&file.path) == "zip" {
                 let output = record.dir.join("expanded").join(web::key(&file.path));

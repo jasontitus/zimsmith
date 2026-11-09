@@ -1376,6 +1376,17 @@ export default function App() {
                     {new Date(job.retry_at * 1000).toLocaleTimeString()}.
                   </div>
                 )}
+              {job.status === "review" &&
+                job.import &&
+                job.logs
+                  .filter((entry) =>
+                    entry.message.startsWith("WARC import omitted"),
+                  )
+                  .map((entry, index) => (
+                    <p className="alert warning" key={index}>
+                      {entry.message}
+                    </p>
+                  ))}
               {job.status === "completed" && (
                 <div className="completed-banner">
                   <span>

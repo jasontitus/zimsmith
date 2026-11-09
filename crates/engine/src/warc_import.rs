@@ -2,13 +2,14 @@
 use crate::{imports::Payload, web, Record};
 use anyhow::{Context, Result};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io::{self, BufRead, BufReader, Read, Write},
     path::Path,
     sync::{atomic::Ordering, Arc},
 };
 use warc::{RecordType, WarcHeader, WarcReader};
 const HEADER_LIMIT: usize = 64 * 1024;
+const MAX_RECORDS: usize = 200_000;
 pub(crate) fn recognized(path: &str) -> bool {
     let path = path.to_ascii_lowercase();
     path.ends_with(".warc") || path.ends_with(".warc.gz")
@@ -159,6 +160,7 @@ impl<R: BufRead> Read for Chunked<R> {
 pub(crate) struct Expansion {
     pub payloads: Vec<Payload>,
     pub budget_used: u64,
+    pub items: usize,
 }
 
 pub(crate) fn expand(
@@ -167,6 +169,7 @@ pub(crate) fn expand(
     output: &Path,
     cap: u64,
     file_cap: u64,
+    item_limit: usize,
     control: Arc<Record>,
 ) -> Result<Expansion> {
     let input = std::fs::File::open(file)?;
@@ -186,11 +189,18 @@ pub(crate) fn expand(
     let mut total = 0u64;
     let mut count = 0usize;
     let mut skipped = 0usize;
+    let mut item_urls = BTreeSet::new();
+    let mut over_item_limit = 0usize;
+    let mut invalid = 0usize;
+    let mut first_invalid_header = None;
     std::fs::create_dir_all(output)?;
     while let Some(record) = records.next_item() {
         let mut record = record.context("Invalid WARC record")?;
         count += 1;
-        anyhow::ensure!(count <= 50_000, "WARC contains too many records");
+        anyhow::ensure!(
+            count <= MAX_RECORDS,
+            "WARC exceeds the {MAX_RECORDS}-record limit"
+        );
         if let Ok(mut job) = control.job.try_lock() {
             job.progress.label = format!("Reading WARC record {count}");
             job.progress.completed = count as u64;
@@ -207,16 +217,22 @@ pub(crate) fn expand(
             }
             continue;
         }
-        if record.truncated_type().is_some() || record.header(WarcHeader::SegmentNumber).is_some() {
+        if record.truncated_type().is_some()
+            || record.header(WarcHeader::Truncated).is_some()
+            || record.header(WarcHeader::SegmentNumber).is_some()
+        {
             skipped += 1;
             continue;
         }
-        let target = record
+        let Some(mut url) = record
             .header(WarcHeader::TargetURI)
-            .context("WARC record has no target URL")?
-            .into_owned();
-        let mut url = web::http_url(target.trim_matches(['<', '>']))?;
+            .and_then(|target| web::http_url(target.trim_matches(['<', '>'])).ok())
+        else {
+            invalid += 1;
+            continue;
+        };
         url.set_fragment(None);
+        let url = url.to_string();
         let declared = record.content_length();
         anyhow::ensure!(
             declared <= file_cap + HEADER_LIMIT as u64,
@@ -240,10 +256,25 @@ pub(crate) fn expand(
             }
             let mut headers = [httparse::EMPTY_HEADER; 128];
             let mut response = httparse::Response::new(&mut headers);
-            anyhow::ensure!(
-                response.parse(&bytes)?.is_complete(),
-                "Invalid HTTP response header"
-            );
+            // Captures can contain legacy folded headers or malformed server
+            // headers. The enclosing WARC length lets us skip only that record.
+            let parsed = httparse::ParserConfig::default()
+                .allow_obsolete_multiline_headers_in_responses(true)
+                .parse_response(&mut response, &bytes);
+            match parsed {
+                Ok(status) if status.is_complete() => {}
+                result => {
+                    invalid += 1;
+                    first_invalid_header.get_or_insert_with(|| {
+                        let reason = result
+                            .err()
+                            .map(|e| e.to_string())
+                            .unwrap_or_else(|| "incomplete response header".into());
+                        format!("record {count}: {reason}")
+                    });
+                    continue;
+                }
+            }
             let status = response.code.context("Missing HTTP status")?;
             if !(200..300).contains(&status) || status == 206 {
                 skipped += 1;
@@ -251,6 +282,17 @@ pub(crate) fn expand(
             }
             let mut http_length = None;
             for h in response.headers {
+                if ![
+                    "content-length",
+                    "content-type",
+                    "content-encoding",
+                    "transfer-encoding",
+                ]
+                .iter()
+                .any(|name| h.name.eq_ignore_ascii_case(name))
+                {
+                    continue;
+                }
                 let value = std::str::from_utf8(h.value)?.trim();
                 if h.name.eq_ignore_ascii_case("content-length") {
                     anyhow::ensure!(http_length.is_none(), "Duplicate HTTP content length");
@@ -290,7 +332,14 @@ pub(crate) fn expand(
             .unwrap_or("")
             .trim()
             .to_ascii_lowercase();
-        let key = web::key(url.as_str());
+        let is_item = matches!(mime.as_str(), "text/html" | "application/xhtml+xml")
+            || mime.starts_with("audio/")
+            || mime.starts_with("video/");
+        if is_item && item_urls.len() >= item_limit && !item_urls.contains(&url) {
+            over_item_limit += 1;
+            continue;
+        }
+        let key = web::key(&url);
         let path = format!("warc-{key}");
         let file = output.join(&path);
         let mut raw: Box<dyn Read + '_> = if chunked {
@@ -335,20 +384,34 @@ pub(crate) fn expand(
             "Extra data after decoded HTTP body"
         );
         dest.sync_all()?;
+        if is_item {
+            item_urls.insert(url.clone());
+        } else {
+            item_urls.remove(&url);
+        }
         payloads.insert(
-            url.to_string(),
+            url.clone(),
             Payload {
                 path,
                 file,
                 size,
-                url: Some(url.to_string()),
+                url: Some(url),
                 mime: Some(mime),
             },
         );
     }
-    if skipped > 0 {
-        if let Ok(mut job) = control.job.try_lock() {
+    if let Ok(mut job) = control.job.try_lock() {
+        if skipped > 0 {
             job.log("warning", format!("WARC import omitted {skipped} redirect, error, partial, revisit, conversion or segmented records. Only complete captured response/resource bodies are imported."));
+        }
+        if invalid > 0 {
+            let detail = first_invalid_header
+                .map(|reason| format!(" First invalid header: {reason}."))
+                .unwrap_or_default();
+            job.log("warning", format!("WARC import omitted {invalid} records with invalid captured HTTP headers or target URLs.{detail}"));
+        }
+        if over_item_limit > 0 {
+            job.log("warning", format!("WARC import omitted {over_item_limit} page or media records beyond the {item_limit}-item review limit."));
         }
     }
     drop(records);
@@ -356,5 +419,6 @@ pub(crate) fn expand(
     Ok(Expansion {
         payloads: payloads.into_values().collect(),
         budget_used: (cap - limited.left).max(total),
+        items: item_urls.len(),
     })
 }

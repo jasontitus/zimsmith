@@ -337,3 +337,73 @@ async fn multiple_warcs_share_expansion_budget_even_for_ignored_metadata() {
     assert!(format!("{error:#}").contains("budget"));
     assert!(!engine.get(&job.id).await.unwrap().import.unwrap().finished);
 }
+
+#[tokio::test]
+async fn warc_skips_bad_http_headers_and_keeps_assets_after_the_review_limit() {
+    let partial = record(
+        "resource",
+        "https://capture.invalid/partial",
+        "text/html",
+        b"<title>Partial</title>",
+    );
+    let partial = partial.strip_prefix(b"WARC/1.1\r\n").unwrap();
+    let mut bytes = b"WARC/1.1\r\nWARC-Truncated: length\r\n".to_vec();
+    bytes.extend(partial);
+    bytes.extend(record(
+        "response",
+        "https://capture.invalid/broken",
+        "application/http",
+        b"HTTP/1.1 200 OK\r\nBad Header: value\r\nContent-Type: text/html\r\n\r\n<title>Broken</title>",
+    ));
+    bytes.extend(record(
+        "response",
+        "https://capture.invalid/keep",
+        "application/http",
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: default-src 'none';\r\n\timg-src 'self'\r\nX-Captured-Header: \xff\r\n\r\n<title>Keep</title><img src='/image'>",
+    ));
+    bytes.extend(record(
+        "resource",
+        "https://capture.invalid/extra",
+        "text/html",
+        b"<title>Beyond the limit</title>",
+    ));
+    bytes.extend(record(
+        "resource",
+        "https://capture.invalid/image",
+        "image/svg+xml",
+        b"<svg xmlns='http://www.w3.org/2000/svg'/>",
+    ));
+
+    let temp = tempfile::tempdir().unwrap();
+    let engine = Engine::open(temp.path()).await.unwrap();
+    let mut settings = config();
+    settings.max_items = 1;
+    let name = "sample.warc";
+    let job = engine
+        .begin_import(
+            settings,
+            vec![ImportFile {
+                path: name.into(),
+                size: bytes.len() as u64,
+            }],
+            None,
+        )
+        .await
+        .unwrap();
+    engine.import_chunk(&job.id, name, 0, &bytes).await.unwrap();
+    let review = engine.finish_import(&job.id).await.unwrap();
+    assert_eq!(review.status, "review");
+    assert_eq!(review.entries.len(), 1);
+    assert_eq!(review.entries[0].title, "Keep");
+    assert!(review
+        .resources
+        .contains_key("https://capture.invalid/image"));
+    assert_eq!(review.requests, 0);
+    for warning in [
+        "invalid captured HTTP headers",
+        "beyond the 1-item review limit",
+        "redirect, error, partial",
+    ] {
+        assert!(review.logs.iter().any(|log| log.message.contains(warning)));
+    }
+}
