@@ -101,18 +101,25 @@ final class MobileFilesPlugin: Plugin, UIDocumentPickerDelegate {
         let url = try archiveURL(args.path)
         DispatchQueue.main.async {
             guard let presenter = self.manager.viewController,
+                  let view = presenter.viewIfLoaded,
+                  let window = view.window,
                   presenter.presentedViewController == nil else {
                 invoke.reject("Close the current dialog before opening an archive")
                 return
             }
             let sheet = UIActivityViewController(activityItems: [url], applicationActivities: nil)
-            if presenter.traitCollection.userInterfaceIdiom == .pad, let view = presenter.view {
+            if presenter.traitCollection.userInterfaceIdiom == .pad {
                 sheet.modalPresentationStyle = .popover
                 sheet.popoverPresentationController?.sourceView = view
                 sheet.popoverPresentationController?.sourceRect = view.safeAreaLayoutGuide.layoutFrame
                 sheet.popoverPresentationController?.permittedArrowDirections = []
             } else {
-                sheet.modalPresentationStyle = .pageSheet
+                // Give the activity controller the window's available width.
+                // UIKit can otherwise size the file actions as a narrow card.
+                sheet.modalPresentationStyle = .formSheet
+                let safeArea = window.bounds.inset(by: window.safeAreaInsets)
+                sheet.preferredContentSize = CGSize(width: safeArea.width, height: safeArea.height)
+                sheet.sheetPresentationController?.detents = [.large()]
             }
             presenter.present(sheet, animated: true)
             invoke.resolve(["opened": true])

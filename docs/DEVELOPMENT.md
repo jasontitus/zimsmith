@@ -40,7 +40,7 @@ The mobile wrapper selects rustup's compiler explicitly, statically builds LZMA,
 
 Signed iOS builds require your `APPLE_DEVELOPMENT_TEAM`. Generated projects under `src-tauri/gen/` can be regenerated. **Save ZIM file** opens the native Files/document picker on iOS and Android; choose Downloads, iCloud Drive, or another folder. Canceling keeps the completed archive available for another attempt. Desktop exports go to Downloads with the archive title in the filename.
 
-Tap a completed collection or **Open ZIM** to hand it to a viewer. Desktop and Android use the system file association. On iOS, choose a ZIM reader or another destination from the system share sheet, which opens at the bottom on iPhone and as a centered popover on iPad. A separate **Details** action keeps job information accessible. Saving and opening do not remove the internal recovery copy. Large archives are staged with a hard link when supported, so opening the picker does not first require another full archive copy.
+Tap a completed collection or **Open ZIM** to hand it to a viewer. Desktop and Android use the system file association. On iOS, choose a ZIM reader or another destination from the system share sheet, which uses the available window width on iPhone and a centered popover on iPad. A separate **Details** action keeps job information accessible. Saving and opening do not remove the internal recovery copy. Large archives are staged with a hard link when supported, so opening the picker does not first require another full archive copy.
 
 The app viewport is fixed to its native scale. iOS and Android webviews disable pinch zoom, and mobile inputs are at least 16px to prevent focus zoom. Exported website pages and archive templates keep their normal reader behavior.
 
